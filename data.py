@@ -1,27 +1,14 @@
+import yfinance as yf
 import pandas as pd
-from oandapyV20 import API
-import oandapyV20.endpoints.instruments as instruments
 
 class DataProvider:
-    def __init__(self, access_token):
-        self.client = API(access_token=access_token)
-
-    def get_ohlc(self, symbol, count=200, granularity="H1"):
-        params = {"count": count, "granularity": granularity}
-        r = instruments.InstrumentsCandles(instrument=symbol, params=params)
-        self.client.request(r)
+    def get_ohlc(self, symbol="EURUSD=X", interval="1h"):
+        # symbol for EURUSD in Yahoo Finance is 'EURUSD=X'
+        data = yf.download(tickers=symbol, period="5d", interval=interval, progress=False)
+        if data.empty:
+            return None
         
-        data = []
-        for candle in r.response['candles']:
-            if candle['complete']:
-                data.append({
-                    'time': candle['time'],
-                    'open': float(candle['mid']['o']),
-                    'high': float(candle['mid']['h']),
-                    'low': float(candle['mid']['l']),
-                    'close': float(candle['mid']['c']),
-                })
-        
-        df = pd.DataFrame(data)
-        df['time'] = pd.to_datetime(df['time'])
+        df = data.copy()
+        # Clean column names
+        df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower() for col in df.columns]
         return df
