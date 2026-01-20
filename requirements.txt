@@ -1,0 +1,4 @@
+flask
+upstash-redis
+yfinance
+pandas
