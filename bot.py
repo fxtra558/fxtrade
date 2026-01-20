@@ -1,52 +1,56 @@
-import MetaTrader5 as mt5
+import time
+import json
+import os
 from data import DataProvider
 from strategy import StevenStrategy
-import time
 
-# CONFIG
-OANDA_TOKEN = "YOUR_OANDA_API_KEY"
-MT5_LOGIN = 12345678  # Your Demo Account Number
-MT5_PASS = "your_password"
-MT5_SERVER = "MetaQuotes-Demo"
+# VIRTUAL ACCOUNT SETUP
+INITIAL_BALANCE = 10000.0
+PORTFOLIO_FILE = "portfolio.json"
 
-def execute_trade(symbol, side, atr):
-    point = mt5.symbol_info(symbol).point
-    price = mt5.symbol_info_tick(symbol).ask if side == "BUY" else mt5.symbol_info_tick(symbol).bid
+if not os.path.exists(PORTFOLIO_FILE):
+    with open(PORTFOLIO_FILE, 'w') as f:
+        json.dump({"balance": INITIAL_BALANCE, "trades": []}, f)
+
+def record_trade(side, price, atr):
+    with open(PORTFOLIO_FILE, 'r') as f:
+        data = json.load(f)
     
-    # ATR based Stop Loss (1.5x ATR)
+    # Calculate Risk Management (Steven's 1.5x ATR)
     sl = price - (1.5 * atr) if side == "BUY" else price + (1.5 * atr)
     tp = price + (3.0 * atr) if side == "BUY" else price - (3.0 * atr)
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": 0.1, # 0.1 lot
-        "type": mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL,
-        "price": price,
+    
+    new_trade = {
+        "side": side,
+        "entry": price,
         "sl": sl,
         "tp": tp,
-        "magic": 1001,
-        "comment": "Steven Strategy Bot",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "status": "OPEN",
+        "time": time.ctime()
     }
-    mt5.order_send(request)
+    
+    data["trades"].append(new_trade)
+    with open(PORTFOLIO_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+    print(f"VIRTUAL TRADE PLACED: {side} at {price}. SL: {sl}, TP: {tp}")
 
 # MAIN LOOP
-if not mt5.initialize(login=MT5_LOGIN, password=MT5_PASS, server=MT5_SERVER):
-    print("MT5 Init Failed")
-    quit()
+dp = DataProvider()
 
-dp = DataProvider(OANDA_TOKEN)
+print("AI Bot starting in Virtual Paper Mode (No KYC)...")
 
 while True:
-    print("Scanning market...")
-    df = dp.get_ohlc("EUR_USD")
-    strat = StevenStrategy(df)
-    signal, atr = strat.check_signals()
-    
-    if signal:
-        print(f"Found {signal} signal! Executing on MT5...")
-        execute_trade("EURUSD", signal, atr)
-    
-    time.sleep(3600) # Check every hour
+    try:
+        df = dp.get_ohlc("EURUSD=X")
+        if df is not None:
+            strat = StevenStrategy(df)
+            signal, price, atr = strat.check_signals()
+            
+            if signal:
+                record_trade(signal, price, atr)
+        
+        print("Scanning... No signal yet.")
+        time.sleep(60) # Scan every minute
+    except Exception as e:
+        print(f"Error: {e}")
+        time.sleep(10)
