@@ -5,116 +5,82 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Steven AI Bot Terminal</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <style>
         body { background-color: #0b0e11; color: #d9d9d9; font-family: 'Inter', sans-serif; }
         .terminal-card { background-color: #161a1e; border: 1px solid #2b2f36; border-radius: 8px; }
         .stat-label { color: #848e9c; font-size: 0.8rem; text-transform: uppercase; }
-        .stat-value { font-size: 1.5rem; font-weight: bold; color: #ffffff; }
-        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .bg-success-dot { background-color: #02c076; box-shadow: 0 0 10px #02c076; }
-        .bg-danger-dot { background-color: #f84960; }
+        .balance-lg { font-size: 2.5rem; color: #02c076; font-weight: bold; }
         .buy-badge { color: #02c076; border: 1px solid #02c076; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
         .sell-badge { color: #f84960; border: 1px solid #f84960; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
-        .balance-lg { font-size: 2.5rem; color: #02c076; }
+        .details-pane { background-color: #1e2329; border-radius: 4px; padding: 15px; margin-top: 5px; }
+        .arrow-btn { cursor: pointer; transition: 0.3s; color: #848e9c; }
+        .arrow-btn:hover { color: white; }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark bg-dark border-bottom border-secondary mb-4">
         <div class="container">
-            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.0 PAPER MODE</small></span>
-            <div class="d-flex align-items-center gap-3">
-                <small class="text-muted">Strategy: 38.2% + Engulfing</small>
-                <a href="/tick" class="btn btn-sm btn-outline-primary">Manual Scan</a>
-            </div>
+            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.1 LIVE TRACKING</small></span>
+            <a href="/tick" class="btn btn-sm btn-outline-primary">Manual Scan</a>
         </div>
     </nav>
 
     <div class="container">
-        <!-- System Integrity Panel -->
-        <div class="row mb-4">
-            <div class="col-12">
-                <div class="terminal-card p-3 d-flex justify-content-between align-items-center">
-                    <div class="d-flex gap-4">
-                        <div>
-                            <span class="status-dot {{ 'bg-success-dot' if db_status == 'Connected' else 'bg-danger-dot' }}"></span>
-                            <small class="stat-label">Database:</small> <small>{{ db_status }}</small>
-                        </div>
-                        <div>
-                            <span class="status-dot {{ 'bg-success-dot' if data_status == 'Online' else 'bg-danger-dot' }}"></span>
-                            <small class="stat-label">Market Feed:</small> <small>{{ data_status }}</small>
-                        </div>
-                        <div>
-                            <span class="status-dot {{ 'bg-success-dot' if logic_status == 'Operational' else 'bg-danger-dot' }}"></span>
-                            <small class="stat-label">Logic Engine:</small> <small>{{ logic_status }}</small>
-                        </div>
-                    </div>
-                    <div class="text-end">
-                        <small class="stat-label">Server Time:</small><br>
-                        <small id="clock"></small>
+        <!-- Dashboard Header -->
+        <div class="row g-4 mb-4">
+            <div class="col-md-4">
+                <div class="terminal-card p-4 h-100">
+                    <span class="stat-label">Virtual Equity</span>
+                    <div class="balance-lg">${{ "{:,.2f}".format(balance) }}</div>
+                    <div class="mt-2 small text-muted">Database: <span class="text-success">{{ db_status }}</span></div>
+                </div>
+            </div>
+            <div class="col-md-8">
+                <div class="terminal-card p-4 h-100">
+                    <span class="stat-label">Market Feed & AI Status</span>
+                    <div class="row mt-2">
+                        <div class="col-6">Feed: <span class="text-success">● {{ data_status }}</span></div>
+                        <div class="col-6">Logic: <span class="text-success">● Operational</span></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="row g-4">
-            <!-- Balance Area -->
-            <div class="col-md-4">
-                <div class="terminal-card p-4 h-100">
-                    <span class="stat-label">Available Equity</span>
-                    <div class="balance-lg">${{ "{:,.2f}".format(balance) }}</div>
-                    <hr style="border-color: #2b2f36;">
-                    <div class="row">
-                        <div class="col-6">
-                            <small class="stat-label">Active Trades</small><br>
-                            <strong>{{ trades|length }}</strong>
+        <!-- Trades Section -->
+        <div class="terminal-card p-4">
+            <span class="stat-label">Open Position Monitor</span>
+            <div class="mt-3">
+                {% for trade in trades %}
+                <div class="mb-2">
+                    <div class="d-flex justify-content-between align-items-center p-3 border-bottom border-secondary">
+                        <div style="width: 20%;"><strong>{{ trade.symbol }}</strong></div>
+                        <div style="width: 15%;"><span class="{{ 'buy-badge' if trade.side == 'BUY' else 'sell-badge' }}">{{ trade.side }}</span></div>
+                        <div style="width: 25%;" class="{{ 'text-success' if trade.pl_pct >= 0 else 'text-danger' }}">
+                            {{ '+' if trade.pl_pct >= 0 }}{{ trade.pl_pct }}%
                         </div>
-                        <div class="col-6">
-                            <small class="stat-label">KYC Status</small><br>
-                            <strong class="text-info">Anonymous</strong>
+                        <div class="arrow-btn" data-bs-toggle="collapse" data-bs-target="#details{{ loop.index }}">
+                            ▼ Details
+                        </div>
+                    </div>
+                    
+                    <!-- Hidden Details Section -->
+                    <div class="collapse" id="details{{ loop.index }}">
+                        <div class="details-pane shadow-sm">
+                            <div class="row text-center">
+                                <div class="col-3"><small class="stat-label d-block">Entry</small> {{ trade.entry }}</div>
+                                <div class="col-3"><small class="stat-label d-block">Live Price</small> <span class="text-info">{{ trade.current_price }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">Stop Loss</small> <span class="text-danger">{{ trade.sl }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">Take Profit</small> <span class="text-success">{{ trade.tp }}</span></div>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <!-- Trade Table -->
-            <div class="col-md-8">
-                <div class="terminal-card p-4 h-100">
-                    <span class="stat-label">Open Position Monitor</span>
-                    <table class="table table-dark table-borderless mt-3">
-                        <thead>
-                            <tr class="text-muted" style="font-size: 0.8rem; border-bottom: 1px solid #2b2f36;">
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Entry</th>
-                                <th>Stop Loss</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody style="font-size: 0.9rem;">
-                            {% for trade in trades %}
-                            <tr>
-                                <td><strong>{{ trade.symbol }}</strong></td>
-                                <td><span class="{{ 'buy-badge' if trade.side == 'BUY' else 'sell-badge' }}">{{ trade.side }}</span></td>
-                                <td>{{ trade.entry }}</td>
-                                <td class="text-danger">{{ trade.sl }}</td>
-                                <td class="text-warning">LIVE</td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="5" class="text-center py-4 text-muted">No signals triggered in current session.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+                {% else %}
+                <div class="text-center py-5 text-muted">Scanning top pairs for Steven's setups...</div>
+                {% endfor %}
             </div>
         </div>
     </div>
-
-    <script>
-        function updateClock() {
-            document.getElementById('clock').innerText = new Date().toLocaleTimeString();
-        }
-        setInterval(updateClock, 1000);
-        updateClock();
-    </script>
 </body>
 </html>
