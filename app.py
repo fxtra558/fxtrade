@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, redirect, url_for
 from upstash_redis import Redis
 import yfinance as yf
 import pandas as pd
@@ -21,12 +21,10 @@ if not redis.exists("balance"):
     redis.set("balance", INITIAL_BALANCE)
 
 def get_clean_trades():
-    """Retrieves open trades and fixes formatting for the UI"""
     raw_trades = redis.lrange("open_trades", 0, -1)
     clean_trades = []
     for t in raw_trades:
         try:
-            # Convert string from database back to dictionary
             item = json.loads(t) if isinstance(t, str) else json.loads(t.decode('utf-8'))
             clean_trades.append(item)
         except: continue
@@ -41,13 +39,15 @@ def home():
         # 1. System Health Checks
         db_health = "Connected" if redis.ping() else "Disconnected"
         
-        test_data = yf.download(tickers="EURUSD=X", period="1d", interval="1h", progress=False)
+        # Enhanced Health Check for Yahoo Finance (Checking 2 days to avoid weekend gaps)
+        test_data = yf.download(tickers="EURUSD=X", period="2d", interval="1h", progress=False)
         data_health = "Online" if not test_data.empty else "Offline"
         
         logic_health = "Operational" if data_health == "Online" else "Waiting"
 
         # 2. Financial Data
-        balance = float(redis.get("balance"))
+        balance_val = redis.get("balance")
+        balance = float(balance_val) if balance_val else INITIAL_BALANCE
         trades = get_clean_trades()
 
         return render_template('index.html', 
@@ -61,44 +61,36 @@ def home():
 
 @app.route('/tick')
 def tick():
-    """The AI Bot Heartbeat (Triggered by Cron-job.org)"""
-    actions = []
-    
+    """The AI Bot Heartbeat - Scans and Redirects back to Home"""
     for sym in SYMBOLS:
         try:
-            # A. Fetch Market Data
+            # Fetch Market Data
             df = yf.download(tickers=sym, period="5d", interval="1h", progress=False)
             if df.empty: continue
             
-            # B. Standardize Columns
+            # Standardize Columns
             df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower() for col in df.columns]
             
-            # C. Run Steven's Strategy Logic
+            # Run Steven's Strategy Logic
             strat = StevenStrategy(df)
             signal, price, atr = strat.check_signals()
             
             if signal:
-                # D. Objective Risk Mgmt (1.5x ATR SL / 3x ATR TP)
-                sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
-                tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
-                
                 trade_data = {
                     "symbol": sym.replace("=X", ""),
                     "side": signal,
                     "entry": round(float(price), 5),
-                    "sl": round(float(sl), 5),
-                    "tp": round(float(tp), 5),
+                    "sl": round(float(price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)), 5),
+                    "tp": round(float(price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)), 5),
                     "time": pd.Timestamp.now().strftime('%H:%M')
                 }
-                
-                # E. Save to Upstash
                 redis.lpush("open_trades", json.dumps(trade_data))
-                actions.append(f"Trade Opened: {signal} {sym}")
 
         except Exception as e:
-            actions.append(f"Error on {sym}: {str(e)}")
+            print(f"Error on {sym}: {e}")
 
-    return jsonify({"status": "Finished", "actions": actions})
+    # THIS IS THE FIX: Instead of showing JSON, go back to the dashboard
+    return redirect(url_for('home'))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
