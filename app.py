@@ -6,106 +6,99 @@ import yfinance as yf
 import pandas as pd
 from strategy import StevenStrategy
 
-# 1. Initialize Flask App
 app = Flask(__name__)
 
-# 2. Connect to Upstash Redis (Pulls from Render Environment Secrets)
+# --- SECURE DATABASE CONNECTION ---
 REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
-
-if not REDIS_URL or not REDIS_TOKEN:
-    print("CRITICAL ERROR: Upstash secrets missing in Render Environment Settings!")
-
 redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
 
-# 3. Configuration & Strategy Settings
+# --- CONFIGURATION ---
 SYMBOLS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X"]
 INITIAL_BALANCE = 10000.0
 
-# Ensure our Virtual Bank Account exists
 if not redis.exists("balance"):
     redis.set("balance", INITIAL_BALANCE)
 
-# --- HELPER FUNCTIONS ---
-
-def get_current_trades():
-    """Fetches open trades from the database and converts them from JSON strings to Python dicts"""
-    raw_list = redis.lrange("open_trades", 0, -1)
-    trades = []
-    for item in raw_list:
+def get_clean_trades():
+    """Retrieves open trades and fixes formatting for the UI"""
+    raw_trades = redis.lrange("open_trades", 0, -1)
+    clean_trades = []
+    for t in raw_trades:
         try:
-            # Handle decoding if necessary
-            t_str = item.decode('utf-8') if isinstance(item, bytes) else item
-            trades.append(json.loads(t_str))
-        except Exception as e:
-            print(f"Error parsing trade: {e}")
-    return trades
+            # Convert string from database back to dictionary
+            item = json.loads(t) if isinstance(t, str) else json.loads(t.decode('utf-8'))
+            clean_trades.append(item)
+        except: continue
+    return clean_trades
 
 # --- ROUTES ---
 
 @app.route('/')
 def home():
-    """Renders the professional dark-mode dashboard"""
+    """The Main Dashboard with System Diagnostics"""
     try:
+        # 1. System Health Checks
+        db_health = "Connected" if redis.ping() else "Disconnected"
+        
+        test_data = yf.download(tickers="EURUSD=X", period="1d", interval="1h", progress=False)
+        data_health = "Online" if not test_data.empty else "Offline"
+        
+        logic_health = "Operational" if data_health == "Online" else "Waiting"
+
+        # 2. Financial Data
         balance = float(redis.get("balance"))
-        trades = get_current_trades()
-        return render_template('index.html', balance=balance, trades=trades)
+        trades = get_clean_trades()
+
+        return render_template('index.html', 
+                               balance=balance, 
+                               trades=trades,
+                               db_status=db_health,
+                               data_status=data_health,
+                               logic_status=logic_health)
     except Exception as e:
-        return f"Dashboard Error: {str(e)}"
+        return f"System Dashboard Error: {str(e)}"
 
 @app.route('/tick')
 def tick():
-    """
-    The main bot loop. 
-    Triggered every hour by Cron-job.org to scan the market.
-    """
-    actions_taken = []
+    """The AI Bot Heartbeat (Triggered by Cron-job.org)"""
+    actions = []
     
     for sym in SYMBOLS:
         try:
-            # A. Fetch Real-time Data (No KYC via Yahoo Finance)
-            data = yf.download(tickers=sym, period="5d", interval="1h", progress=False)
-            if data.empty:
-                continue
+            # A. Fetch Market Data
+            df = yf.download(tickers=sym, period="5d", interval="1h", progress=False)
+            if df.empty: continue
             
-            # B. Clean Data Columns
-            df = data.copy()
+            # B. Standardize Columns
             df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower() for col in df.columns]
             
-            # C. Check Strategy (Steven's rules from the video)
+            # C. Run Steven's Strategy Logic
             strat = StevenStrategy(df)
             signal, price, atr = strat.check_signals()
             
             if signal:
-                # D. Objective Risk Management
-                # Stop Loss = 1.5x ATR, Take Profit = 3.0x ATR
+                # D. Objective Risk Mgmt (1.5x ATR SL / 3x ATR TP)
                 sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
                 tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
                 
-                new_trade = {
+                trade_data = {
                     "symbol": sym.replace("=X", ""),
                     "side": signal,
                     "entry": round(float(price), 5),
                     "sl": round(float(sl), 5),
                     "tp": round(float(tp), 5),
-                    "time": pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')
+                    "time": pd.Timestamp.now().strftime('%H:%M')
                 }
                 
-                # E. Save trade to database
-                redis.lpush("open_trades", json.dumps(new_trade))
-                actions_taken.append(f"Opened {signal} on {sym}")
-                
+                # E. Save to Upstash
+                redis.lpush("open_trades", json.dumps(trade_data))
+                actions.append(f"Trade Opened: {signal} {sym}")
+
         except Exception as e:
-            print(f"Error scanning {sym}: {e}")
+            actions.append(f"Error on {sym}: {str(e)}")
 
-    return jsonify({
-        "status": "Scan Complete", 
-        "timestamp": pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'),
-        "actions": actions_taken,
-        "new_balance": redis.get("balance")
-    })
+    return jsonify({"status": "Finished", "actions": actions})
 
-# Render uses Gunicorn, but this allows local testing
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
