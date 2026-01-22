@@ -9,18 +9,15 @@ import pandas as pd
 app = Flask(__name__)
 
 # --- SECURE CONFIG & SECRETS ---
-# Ensure these are set in Render: 
-# UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, OANDA_API_KEY, OANDA_ACCOUNT_ID
 REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 OANDA_TOKEN = os.environ.get("OANDA_API_KEY")
 OANDA_ACCT = os.environ.get("OANDA_ACCOUNT_ID")
 
-# Initialize external connections
 redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
 dp = DataProvider(OANDA_TOKEN, OANDA_ACCT)
 
-# Top Forex Pairs from the video
+# Top Forex Pairs
 SYMBOLS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD"]
 INITIAL_BALANCE = 10000.0
 
@@ -35,43 +32,33 @@ def get_clean_trades():
     clean_trades = []
     for t in raw_trades:
         try:
-            # Handle potential bytes/string decoding
             t_str = t.decode('utf-8') if hasattr(t, 'decode') else t
             clean_trades.append(json.loads(t_str))
         except: continue
     return clean_trades
 
 def settle_closed_trades():
-    """
-    Advanced Sync: Checks OANDA to see if any trades hit SL or TP 
-    while the bot was sleeping. Updates balance if they did.
-    """
+    """Syncs Dashboard with Broker positions and updates balance"""
     try:
-        broker_positions = dp.get_all_open_positions() # Returns e.g. ['EUR_USD']
+        broker_positions = dp.get_all_open_positions()
         db_trades = redis.lrange("open_trades", 0, -1)
         
         for t_raw in db_trades:
             trade = json.loads(t_raw.decode('utf-8') if hasattr(t_raw, 'decode') else t_raw)
             
-            # If trade is in our database but NOT open at the broker, it closed
             if trade['symbol'] not in broker_positions:
-                # 1. Fetch current price to see outcome
+                # Trade hit SL or TP. Fetch price to see outcome.
                 live_df = dp.get_ohlc(trade['symbol'], count=1)
                 if live_df is None: continue
                 
                 exit_price = float(live_df['close'].iloc[-1])
                 entry_price = float(trade['entry'])
-                
-                # 2. Determine Win/Loss
                 is_buy = trade['side'] == "BUY"
                 win = (exit_price > entry_price) if is_buy else (exit_price < entry_price)
                 
-                # 3. Update Balance (Fixed $100 win / $50 loss for paper mode simulation)
                 current_bal = float(redis.get("balance") or INITIAL_BALANCE)
                 profit_loss = 200.0 if win else -100.0 
                 redis.set("balance", current_bal + profit_loss)
-                
-                # 4. Remove from Open Trades list
                 redis.lrem("open_trades", 1, t_raw)
                 print(f"Settled {trade['symbol']}: {'WIN' if win else 'LOSS'}")
     except Exception as e:
@@ -81,18 +68,17 @@ def settle_closed_trades():
 
 @app.route('/')
 def home():
-    """The Dashboard UI"""
+    """The Dashboard UI with Multi-Timeframe Health Check"""
     try:
         # Diagnostic Checks
         db_health = "Connected" if redis.ping() else "Disconnected"
-        test_df = dp.get_ohlc("EUR_USD", count=1)
-        data_health = "Online (OANDA)" if test_df is not None else "Offline"
+        test_df = dp.get_ohlc("EUR_USD", granularity="D", count=1) # Checking Daily Feed
+        data_health = "Online (OANDA D+H1)" if test_df is not None else "Offline"
 
-        # Financial Data
         balance = float(redis.get("balance") or INITIAL_BALANCE)
         trades = get_clean_trades()
 
-        # Update Live P/L for the UI display
+        # Update Live P/L for display
         for trade in trades:
             live_df = dp.get_ohlc(trade['symbol'], granularity="M5", count=1)
             if live_df is not None and not live_df.empty:
@@ -112,40 +98,33 @@ def home():
 
 @app.route('/tick')
 def tick():
-    """The Automated Heartbeat: Settles old trades and scans for new ones"""
+    """ADVANCED LOOP: Checks Daily Trend before scanning H1 Patterns"""
     try:
-        # 1. First, check if any open trades finished
         settle_closed_trades()
 
-        # 2. Scan each symbol for Steven's strategy setups
         for sym in SYMBOLS:
-            # Prevent doubling up on the same pair
             if dp.is_position_open(sym): continue
 
-            # Get H1 data for trend/pattern analysis
-            df = dp.get_ohlc(sym, granularity="H1", count=100)
-            if df is None or df.empty: continue
+            # UPGRADE 1: Fetch Daily data (Bias) and H1 data (Entry)
+            df_daily = dp.get_ohlc(sym, granularity="D", count=250) # Need 200 for EMA200
+            df_h1 = dp.get_ohlc(sym, granularity="H1", count=100)
             
-            strat = StevenStrategy(df)
+            if df_daily is None or df_h1 is None: continue
+            
+            # Pass both timeframes into the strategy
+            strat = StevenStrategy(df_h1, df_daily)
             signal, price_data, atr = strat.check_signals()
             
             if signal:
-                # Get scalar price
                 price = float(price_data.iloc[-1]) if hasattr(price_data, 'iloc') else float(price_data)
-                
-                # Steven's Objective Risk Management
                 sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
                 tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
                 
-                # Execute trade on OANDA
-                # 1000 units = 0.01 standard lot
+                # Execute on OANDA
                 if dp.place_market_order(sym, signal, 1000, sl, tp):
                     trade_data = {
-                        "symbol": sym, 
-                        "side": signal, 
-                        "entry": round(price, 5),
-                        "sl": round(sl, 5), 
-                        "tp": round(tp, 5), 
+                        "symbol": sym, "side": signal, "entry": round(price, 5),
+                        "sl": round(sl, 5), "tp": round(tp, 5), 
                         "time": str(pd.Timestamp.now())
                     }
                     redis.lpush("open_trades", json.dumps(trade_data))
