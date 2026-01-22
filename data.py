@@ -2,6 +2,7 @@ import pandas as pd
 from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
 import oandapyV20.endpoints.orders as orders
+import oandapyV20.endpoints.positions as positions
 
 class DataProvider:
     def __init__(self, token, account_id):
@@ -25,15 +26,22 @@ class DataProvider:
                         "close": float(c['mid']['c'])
                     })
             return pd.DataFrame(data)
-        except Exception as e:
-            print(f"Data Fetch Error: {e}")
-            return None
+        except: return None
+
+    def is_position_open(self, symbol):
+        """Checks OANDA to see if we already have a trade open for this symbol"""
+        try:
+            r = positions.PositionDetails(accountID=self.account_id, instrument=symbol)
+            self.client.request(r)
+            # If long or short units are not 0, position is open
+            pos = r.response.get('position', {})
+            return abs(float(pos.get('long', {}).get('units', 0))) > 0 or \
+                   abs(float(pos.get('short', {}).get('units', 0))) > 0
+        except:
+            return False
 
     def place_market_order(self, symbol, side, units, sl, tp):
-        # Units must be positive for BUY, negative for SELL
         order_units = str(units) if side == "BUY" else str(-units)
-        
-        # OANDA requires prices as STRINGS with max 5 decimal places
         data = {
             "order": {
                 "price": "",
@@ -50,6 +58,4 @@ class DataProvider:
             r = orders.OrderCreate(accountID=self.account_id, data=data)
             self.client.request(r)
             return r.response
-        except Exception as e:
-            print(f"Broker Order Rejection: {e}")
-            return None
+        except: return None
