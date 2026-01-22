@@ -38,7 +38,7 @@ def get_clean_trades():
     return clean_trades
 
 def settle_closed_trades():
-    """Syncs Dashboard with Broker positions and updates balance"""
+    """Syncs Dashboard with Broker positions and updates virtual balance"""
     try:
         broker_positions = dp.get_all_open_positions()
         db_trades = redis.lrange("open_trades", 0, -1)
@@ -47,8 +47,8 @@ def settle_closed_trades():
             trade = json.loads(t_raw.decode('utf-8') if hasattr(t_raw, 'decode') else t_raw)
             
             if trade['symbol'] not in broker_positions:
-                # Trade hit SL or TP. Fetch price to see outcome.
-                live_df = dp.get_ohlc(trade['symbol'], count=1)
+                # Trade hit SL or TP at OANDA. Determine outcome.
+                live_df = dp.get_ohlc(trade['symbol'], granularity="M5", count=1)
                 if live_df is None: continue
                 
                 exit_price = float(live_df['close'].iloc[-1])
@@ -56,9 +56,13 @@ def settle_closed_trades():
                 is_buy = trade['side'] == "BUY"
                 win = (exit_price > entry_price) if is_buy else (exit_price < entry_price)
                 
+                # Update Balance
                 current_bal = float(redis.get("balance") or INITIAL_BALANCE)
+                # Assuming standard risk for virtual growth
                 profit_loss = 200.0 if win else -100.0 
                 redis.set("balance", current_bal + profit_loss)
+                
+                # Clear from list
                 redis.lrem("open_trades", 1, t_raw)
                 print(f"Settled {trade['symbol']}: {'WIN' if win else 'LOSS'}")
     except Exception as e:
@@ -68,23 +72,25 @@ def settle_closed_trades():
 
 @app.route('/')
 def home():
-    """The Dashboard UI with Multi-Timeframe Health Check"""
+    """The Professional Dashboard"""
     try:
-        # Diagnostic Checks
+        # 1. Health Checks
         db_health = "Connected" if redis.ping() else "Disconnected"
-        test_df = dp.get_ohlc("EUR_USD", granularity="D", count=1) # Checking Daily Feed
+        test_df = dp.get_ohlc("EUR_USD", granularity="D", count=1)
         data_health = "Online (OANDA D+H1)" if test_df is not None else "Offline"
 
+        # 2. Financials
         balance = float(redis.get("balance") or INITIAL_BALANCE)
         trades = get_clean_trades()
 
-        # Update Live P/L for display
+        # 3. Calculate Real-time P/L for the UI
         for trade in trades:
             live_df = dp.get_ohlc(trade['symbol'], granularity="M5", count=1)
             if live_df is not None and not live_df.empty:
                 curr = float(live_df['close'].iloc[-1])
                 entry = float(trade['entry'])
-                trade['current_price'] = curr
+                trade['current_price'] = round(curr, 5)
+                # Calculate % P/L
                 diff = (curr - entry) if trade['side'] == "BUY" else (entry - curr)
                 trade['pl_pct'] = round((diff / entry) * 100, 3)
             else:
@@ -94,43 +100,46 @@ def home():
         return render_template('index.html', balance=balance, trades=trades, 
                                db_status=db_health, data_status=data_health, logic_status="Operational")
     except Exception as e:
-        return f"Dashboard Display Error: {str(e)}"
+        return f"UI Logic Error: {str(e)}"
 
 @app.route('/tick')
 def tick():
-    """ADVANCED LOOP: Checks Daily Trend before scanning H1 Patterns"""
+    """ADVANCED AUTOMATED TICK: MTF Scanning + Real Execution"""
     try:
+        # A. Cleanup closed positions
         settle_closed_trades()
 
         for sym in SYMBOLS:
+            # B. Check if we already have a position
             if dp.is_position_open(sym): continue
 
-            # UPGRADE 1: Fetch Daily data (Bias) and H1 data (Entry)
-            df_daily = dp.get_ohlc(sym, granularity="D", count=250) # Need 200 for EMA200
+            # C. Multi-Timeframe Data Fetch
+            df_daily = dp.get_ohlc(sym, granularity="D", count=250)
             df_h1 = dp.get_ohlc(sym, granularity="H1", count=100)
             
             if df_daily is None or df_h1 is None: continue
             
-            # Pass both timeframes into the strategy
+            # D. Call Strategy (Returns: signal, price, sl, tp)
             strat = StevenStrategy(df_h1, df_daily)
-            signal, price_data, atr = strat.check_signals()
+            signal, price, sl, tp = strat.check_signals()
             
             if signal:
-                price = float(price_data.iloc[-1]) if hasattr(price_data, 'iloc') else float(price_data)
-                sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
-                tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
-                
-                # Execute on OANDA
+                # E. Execute trade on OANDA Demo
+                # 1000 units is approx $10 margin
                 if dp.place_market_order(sym, signal, 1000, sl, tp):
                     trade_data = {
-                        "symbol": sym, "side": signal, "entry": round(price, 5),
-                        "sl": round(sl, 5), "tp": round(tp, 5), 
+                        "symbol": sym, 
+                        "side": signal, 
+                        "entry": round(float(price), 5),
+                        "sl": round(float(sl), 5), 
+                        "tp": round(float(tp), 5), 
                         "time": str(pd.Timestamp.now())
                     }
+                    # Save to persistence
                     redis.lpush("open_trades", json.dumps(trade_data))
                     
     except Exception as e:
-        print(f"BOT EXECUTION ERROR: {e}")
+        print(f"CRITICAL SYSTEM ERROR: {e}")
         
     return redirect(url_for('home'))
 
