@@ -16,26 +16,29 @@ class DataProvider:
             candles = r.response.get('candles', [])
             data = []
             for c in candles:
-                data.append({
-                    "time": c['time'],
-                    "open": float(c['mid']['o']),
-                    "high": float(c['mid']['h']),
-                    "low": float(c['mid']['l']),
-                    "close": float(c['mid']['c'])
-                })
+                if c['complete']:
+                    data.append({
+                        "time": c['time'],
+                        "open": float(c['mid']['o']),
+                        "high": float(c['mid']['h']),
+                        "low": float(c['mid']['l']),
+                        "close": float(c['mid']['c'])
+                    })
             return pd.DataFrame(data)
-        except: return None
+        except Exception as e:
+            print(f"Data Fetch Error: {e}")
+            return None
 
     def place_market_order(self, symbol, side, units, sl, tp):
-        """Sends a real trade to the OANDA Demo Broker"""
-        # Units must be negative for SELL
+        # Units must be positive for BUY, negative for SELL
         order_units = str(units) if side == "BUY" else str(-units)
         
+        # OANDA requires prices as STRINGS with max 5 decimal places
         data = {
             "order": {
                 "price": "",
-                "stopLossOnFill": {"timeInForce": "GTC", "price": str(round(sl, 5))},
-                "takeProfitOnFill": {"timeInForce": "GTC", "price": str(round(tp, 5))},
+                "stopLossOnFill": {"timeInForce": "GTC", "price": "{:.5f}".format(sl)},
+                "takeProfitOnFill": {"timeInForce": "GTC", "price": "{:.5f}".format(tp)},
                 "timeInForce": "FOK",
                 "instrument": symbol,
                 "units": order_units,
@@ -48,5 +51,5 @@ class DataProvider:
             self.client.request(r)
             return r.response
         except Exception as e:
-            print(f"OANDA Order Error: {e}")
+            print(f"Broker Order Rejection: {e}")
             return None
