@@ -1,5 +1,5 @@
 flask
 upstash-redis
-yfinance
+oandapyV20
 pandas
 gunicorn
