@@ -8,7 +8,7 @@ import pandas as pd
 
 app = Flask(__name__)
 
-# --- CONFIG ---
+# --- SECURE CONFIG ---
 REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 OANDA_TOKEN = os.environ.get("OANDA_API_KEY")
@@ -23,69 +23,64 @@ SYMBOLS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]
 def home():
     try:
         db_health = "Connected" if redis.ping() else "Disconnected"
+        balance = float(redis.get("balance") or 10000.0)
         
-        # 1. Fetch current trades from Database
         raw_trades = redis.lrange("open_trades", 0, -1)
         trades = []
+        
         for t in raw_trades:
-            trade = json.loads(t) if isinstance(t, str) else json.loads(t.decode('utf-8'))
-            
-            # 2. FETCH REAL-TIME PRICE FOR EACH TRADE
-            live_df = dp.get_ohlc(trade['symbol'], granularity="M1", count=1)
-            if live_df is not None and not live_df.empty:
-                current_price = float(live_df['close'].iloc[-1])
-                entry = float(trade['entry'])
+            try:
+                trade = json.loads(t.decode('utf-8') if hasattr(t, 'decode') else t)
+                # Fetch Current Price with a 5-candle buffer for safety
+                live_df = dp.get_ohlc(trade['symbol'], granularity="M5", count=5)
                 
-                # 3. CALCULATE LIVE P/L %
-                if trade['side'] == "BUY":
-                    p_l = ((current_price - entry) / entry) * 100
+                if live_df is not None and not live_df.empty:
+                    curr = float(live_df['close'].iloc[-1])
+                    entry = float(trade['entry'])
+                    trade['current_price'] = curr
+                    # P/L Math
+                    diff = (curr - entry) if trade['side'] == "BUY" else (entry - curr)
+                    trade['pl_pct'] = round((diff / entry) * 100, 3)
                 else:
-                    p_l = ((entry - current_price) / entry) * 100
+                    trade['current_price'] = trade['entry']
+                    trade['pl_pct'] = 0.0
                 
-                trade['current_price'] = round(current_price, 5)
-                trade['pl_pct'] = round(p_l, 3) # 3 decimals for precision
-            else:
-                trade['current_price'] = "Syncing..."
-                trade['pl_pct'] = 0.0
-                
-            trades.append(trade)
+                trades.append(trade)
+            except: continue
 
-        balance = float(redis.get("balance"))
         return render_template('index.html', balance=balance, trades=trades, 
                                db_status=db_health, data_status="Online (OANDA)", logic_status="Operational")
     except Exception as e:
-        return f"Dashboard Error: {str(e)}"
+        return f"Critical UI Error: {str(e)}"
 
 @app.route('/tick')
 def tick():
-    """Scans and prevents duplicate trades"""
-    for sym in SYMBOLS:
-        # STEP 1: CHECK IF POSITION ALREADY EXISTS AT BROKER
-        if dp.is_position_open(sym):
-            print(f"Skipping {sym}: Position already open.")
-            continue
+    """Safety-focused loop that redirects home no matter what"""
+    try:
+        for sym in SYMBOLS:
+            # 1. Prevent crashes by checking open status safely
+            if dp.is_position_open(sym): continue
 
-        df = dp.get_ohlc(sym, granularity="H1")
-        if df is None: continue
-        
-        strat = StevenStrategy(df)
-        signal, price_series, atr = strat.check_signals()
-        
-        if signal:
-            price = float(price_series.iloc[-1])
-            sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
-            tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
+            df = dp.get_ohlc(sym, granularity="H1", count=100)
+            if df is None or df.empty: continue
             
-            # PLACE ORDER
-            response = dp.place_market_order(sym, signal, 1000, sl, tp)
+            strat = StevenStrategy(df)
+            signal, price_data, atr = strat.check_signals()
             
-            if response:
-                trade_data = {
-                    "symbol": sym, "side": signal, "entry": round(price, 5),
-                    "sl": round(sl, 5), "tp": round(tp, 5), "pl_pct": 0.0
-                }
-                redis.lpush("open_trades", json.dumps(trade_data))
+            if signal:
+                # Handle price whether it's a Series or a Float
+                price = float(price_data.iloc[-1]) if hasattr(price_data, 'iloc') else float(price_data)
                 
+                sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
+                tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
+                
+                if dp.place_market_order(sym, signal, 1000, sl, tp):
+                    trade_data = {"symbol": sym, "side": signal, "entry": round(price, 5),
+                                  "sl": round(sl, 5), "tp": round(tp, 5), "time": str(pd.Timestamp.now())}
+                    redis.lpush("open_trades", json.dumps(trade_data))
+    except Exception as e:
+        print(f"BOT ERROR: {e}")
+        
     return redirect(url_for('home'))
 
 if __name__ == "__main__":
