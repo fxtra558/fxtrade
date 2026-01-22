@@ -14,20 +14,19 @@
         .buy-badge { color: #02c076; border: 1px solid #02c076; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
         .sell-badge { color: #f84960; border: 1px solid #f84960; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
         .details-pane { background-color: #1e2329; border-radius: 4px; padding: 15px; margin-top: 5px; }
-        .arrow-btn { cursor: pointer; transition: 0.3s; color: #848e9c; }
+        .arrow-btn { cursor: pointer; color: #848e9c; font-size: 0.9rem; }
         .arrow-btn:hover { color: white; }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark bg-dark border-bottom border-secondary mb-4">
         <div class="container">
-            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.1 LIVE TRACKING</small></span>
+            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.2 OANDA LIVE</small></span>
             <a href="/tick" class="btn btn-sm btn-outline-primary">Manual Scan</a>
         </div>
     </nav>
 
     <div class="container">
-        <!-- Dashboard Header -->
         <div class="row g-4 mb-4">
             <div class="col-md-4">
                 <div class="terminal-card p-4 h-100">
@@ -38,7 +37,7 @@
             </div>
             <div class="col-md-8">
                 <div class="terminal-card p-4 h-100">
-                    <span class="stat-label">Market Feed & AI Status</span>
+                    <span class="stat-label">OANDA Feed Status</span>
                     <div class="row mt-2">
                         <div class="col-6">Feed: <span class="text-success">● {{ data_status }}</span></div>
                         <div class="col-6">Logic: <span class="text-success">● Operational</span></div>
@@ -47,7 +46,6 @@
             </div>
         </div>
 
-        <!-- Trades Section -->
         <div class="terminal-card p-4">
             <span class="stat-label">Open Position Monitor</span>
             <div class="mt-3">
@@ -56,28 +54,27 @@
                     <div class="d-flex justify-content-between align-items-center p-3 border-bottom border-secondary">
                         <div style="width: 20%;"><strong>{{ trade.symbol }}</strong></div>
                         <div style="width: 15%;"><span class="{{ 'buy-badge' if trade.side == 'BUY' else 'sell-badge' }}">{{ trade.side }}</span></div>
-                        <div style="width: 25%;" class="{{ 'text-success' if trade.pl_pct >= 0 else 'text-danger' }}">
-                            {{ '+' if trade.pl_pct >= 0 }}{{ trade.pl_pct }}%
+                        <div style="width: 25%;" class="{{ 'text-success' if trade.get('pl_pct', 0) >= 0 else 'text-danger' }}">
+                            {{ '+' if trade.get('pl_pct', 0) >= 0 }}{{ trade.get('pl_pct', 0) }}%
                         </div>
                         <div class="arrow-btn" data-bs-toggle="collapse" data-bs-target="#details{{ loop.index }}">
                             ▼ Details
                         </div>
                     </div>
                     
-                    <!-- Hidden Details Section -->
                     <div class="collapse" id="details{{ loop.index }}">
-                        <div class="details-pane shadow-sm">
+                        <div class="details-pane">
                             <div class="row text-center">
                                 <div class="col-3"><small class="stat-label d-block">Entry</small> {{ trade.entry }}</div>
-                                <div class="col-3"><small class="stat-label d-block">Live Price</small> <span class="text-info">{{ trade.current_price }}</span></div>
-                                <div class="col-3"><small class="stat-label d-block">Stop Loss</small> <span class="text-danger">{{ trade.sl }}</span></div>
-                                <div class="col-3"><small class="stat-label d-block">Take Profit</small> <span class="text-success">{{ trade.tp }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">Live</small> <span class="text-info">{{ trade.get('current_price', '---') }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">SL</small> <span class="text-danger">{{ trade.sl }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">TP</small> <span class="text-success">{{ trade.tp }}</span></div>
                             </div>
                         </div>
                     </div>
                 </div>
                 {% else %}
-                <div class="text-center py-5 text-muted">Scanning top pairs for Steven's setups...</div>
+                <div class="text-center py-5 text-muted">No OANDA positions active. Scanning...</div>
                 {% endfor %}
             </div>
         </div>
