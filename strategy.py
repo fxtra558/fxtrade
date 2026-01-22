@@ -6,72 +6,67 @@ class StevenStrategy:
         self.df = df_h1
         self.df_daily = df_daily
         
-        # --- RISK PARAMETERS (The Money Maker) ---
-        self.sl_multiplier = 1.5  # Risking 1.5x the current volatility
-        self.reward_risk_ratio = 2.0  # Making 2x what we risk (Positive Expectancy)
+        # --- FIXED RISK RULES ---
+        self.sl_multiplier = 1.5      # 1.5x ATR Stop Loss
+        self.partial_tp_ratio = 2.0   # Close half at 2.0R (The 2R Rule)
 
     def calculate_indicators(self):
-        # 1. Trend & Volatility (H1)
-        self.df['ema20'] = self.df['close'].ewm(span=20, adjust=False).mean()
-        
+        # 1. BIAS (Daily) - The only directional filter
+        self.df_daily['ema200'] = self.df_daily['close'].ewm(span=200, adjust=False).mean()
+
+        # 2. REGIME (H1) - ATR Expansion
         high_low = self.df['high'] - self.df['low']
         high_cp = abs(self.df['high'] - self.df['close'].shift())
         low_cp = abs(self.df['low'] - self.df['close'].shift())
         self.df['atr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1).rolling(14).mean()
         
-        # Volatility Regime Filter
-        self.df['atr_sma'] = self.df['atr'].rolling(10).mean()
+        # Volatility Mean (to detect expansion)
+        self.df['atr_mean'] = self.df['atr'].rolling(20).mean()
 
-        # 2. Daily Bias (The Filter)
-        self.df_daily['ema200'] = self.df_daily['close'].ewm(span=200, adjust=False).mean()
-
-        # 3. Market Structure (Higher Lows/Lower Highs)
-        self.df['recent_low'] = self.df['low'].rolling(window=10).min()
-        self.df['recent_high'] = self.df['high'].rolling(window=10).max()
-        self.df['prev_swing_low'] = self.df['low'].shift(10).rolling(window=10).min()
-        self.df['prev_swing_high'] = self.df['high'].shift(10).rolling(window=10).max()
+        # 3. VALUE (H1) - EMA 20
+        self.df['ema20'] = self.df['close'].ewm(span=20, adjust=False).mean()
 
     def check_signals(self):
         self.calculate_indicators()
         
-        row = self.df.iloc[-1]
-        prev_row = self.df.iloc[-2]
-        daily_row = self.df_daily.iloc[-1]
+        h1 = self.df.iloc[-1]
+        prev_h1 = self.df.iloc[-2]
+        daily = self.df_daily.iloc[-1]
         
-        # --- THE MULTI-LAYER FILTER SYSTEM ---
-        is_daily_bullish = daily_row['close'] > daily_row['ema200']
-        is_daily_bearish = daily_row['close'] < daily_row['ema200']
-        is_vol_expanding = row['atr'] > row['atr_sma']
-        has_bull_structure = row['recent_low'] > row['prev_swing_low']
-        has_bear_structure = row['recent_high'] < row['prev_swing_high']
-        is_h1_uptrend = row['close'] > row['ema20']
-        is_h1_downtrend = row['close'] < row['ema20']
+        # --- 1. DIRECTIONAL BIAS (ONE FILTER) ---
+        is_bullish_bias = daily['close'] > daily['ema200']
+        is_bearish_bias = daily['close'] < daily['ema200']
 
-        # Patterns
-        total_range = row['high'] - row['low']
-        bull_382 = (row['high'] - row['close']) / total_range < 0.382 if total_range > 0 else False
-        bear_382 = (row['close'] - row['low']) / total_range < 0.382 if total_range > 0 else False
-        bull_engulf = (row['close'] > prev_row['open']) and (prev_row['close'] < prev_row['open'])
-        bear_engulf = (row['close'] < prev_row['open']) and (prev_row['close'] > prev_row['open'])
+        # --- 2. REGIME FILTER (ATR EXPANSION) ---
+        # Volatility must be higher than its 20-period average to avoid chop
+        is_expanding = h1['atr'] > h1['atr_mean']
 
-        # --- SIGNAL EXECUTION WITH EXPECTANCY MATH ---
-        price = float(row['close'])
-        atr = float(row['atr'])
-        risk_distance = atr * self.sl_multiplier
-        reward_distance = risk_distance * self.reward_risk_ratio
+        # --- 3. ENTRY LOCATION (AREA OF VALUE) ---
+        # Price must be within 1 ATR of the EMA 20 (Mean Reversion)
+        price_to_ema_dist = abs(h1['close'] - h1['ema20'])
+        is_at_value = price_to_ema_dist <= h1['atr']
 
-        # BUY Logic
-        if is_daily_bullish and is_vol_expanding and has_bull_structure:
-            if is_h1_uptrend and (bull_382 or bull_engulf):
-                sl = price - risk_distance
-                tp = price + reward_distance
-                return "BUY", price, sl, tp
-        
-        # SELL Logic
-        if is_daily_bearish and is_vol_expanding and has_bear_structure:
-            if is_h1_downtrend and (bear_382 or bear_engulf):
-                sl = price + risk_distance
-                tp = price - reward_distance
-                return "SELL", price, sl, tp
+        # --- 4. CONFIRMATION (STRUCTURAL FAILURE) ---
+        # Uptrend: Current Low is higher than Previous Low (Refusal to reverse)
+        bullish_confirm = h1['low'] > prev_h1['low']
+        # Downtrend: Current High is lower than Previous High
+        bearish_confirm = h1['high'] < prev_h1['high']
+
+        # --- FINAL EXECUTION LOGIC ---
+        price = float(h1['close'])
+        atr = float(h1['atr'])
+        risk = atr * self.sl_multiplier
+
+        # BUY: Bias UP + Expanding Vol + At Value + Structural Confirmation
+        if is_bullish_bias and is_expanding and is_at_value and bullish_confirm:
+            sl = price - risk
+            tp2r = price + (risk * self.partial_tp_ratio)
+            return "BUY", price, sl, tp2r
+
+        # SELL: Bias DOWN + Expanding Vol + At Value + Structural Confirmation
+        if is_bearish_bias and is_expanding and is_at_value and bearish_confirm:
+            sl = price + risk
+            tp2r = price - (risk * self.partial_tp_ratio)
+            return "SELL", price, sl, tp2r
             
         return None, None, None, None
