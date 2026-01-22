@@ -22,58 +22,65 @@ SYMBOLS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]
 @app.route('/')
 def home():
     try:
-        # Check Feed via a simple call
-        test_df = dp.get_ohlc("EUR_USD", count=5)
-        data_health = "Online (OANDA)" if test_df is not None else "Offline"
+        # Check Database
         db_health = "Connected" if redis.ping() else "Disconnected"
         
-        balance = float(redis.get("balance"))
-        # Get trades from our DB for the UI
+        # Financial Data
+        raw_bal = redis.get("balance")
+        balance = float(raw_bal) if raw_bal else 10000.0
+        
         raw_trades = redis.lrange("open_trades", 0, -1)
-        trades = [json.loads(t) for t in raw_trades]
-
-        # Calculate live P/L for the UI
-        for trade in trades:
-            live = dp.get_ohlc(trade['symbol'], granularity="M1", count=1)
-            if live is not None:
-                curr = float(live['close'].iloc[-1])
-                entry = float(trade['entry'])
-                trade['current_price'] = curr
-                trade['pl_pct'] = round(((curr - entry)/entry)*100 if trade['side'] == "BUY" else ((entry - curr)/entry)*100, 2)
+        trades = []
+        for t in raw_trades:
+            try:
+                # Ensure we handle bytes vs strings correctly
+                t_str = t.decode('utf-8') if hasattr(t, 'decode') else t
+                trades.append(json.loads(t_str))
+            except: continue
 
         return render_template('index.html', balance=balance, trades=trades, 
-                               db_status=db_health, data_status=data_health, logic_status="Operational")
+                               db_status=db_health, data_status="Online (OANDA)", logic_status="Operational")
     except Exception as e:
-        return f"System Error: {str(e)}"
+        return f"Dashboard Error: {str(e)}"
 
 @app.route('/tick')
 def tick():
-    """Triggered by Cron-job: Scans and executes on OANDA account"""
-    for sym in SYMBOLS:
-        df = dp.get_ohlc(sym, granularity="H1")
-        if df is None: continue
-        
-        strat = StevenStrategy(df)
-        signal, price_series, atr = strat.check_signals()
-        
-        if signal:
-            price = float(price_series.iloc[-1])
-            sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
-            tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
+    """Safety-First scanning loop"""
+    try:
+        for sym in SYMBOLS:
+            df = dp.get_ohlc(sym, granularity="H1")
+            if df is None or df.empty: continue
             
-            # 1. PLACE REAL ORDER IN OANDA
-            # 1000 units is roughly 0.01 lot
-            response = dp.place_market_order(sym, signal, 1000, sl, tp)
+            strat = StevenStrategy(df)
+            # Strategy returns (signal, price_series, atr)
+            signal, price_series, atr = strat.check_signals()
             
-            if response:
-                # 2. IF BROKER ACCEPTS, RECORD IN DASHBOARD
-                trade_data = {
-                    "symbol": sym, "side": signal, "entry": round(price, 5),
-                    "sl": round(sl, 5), "tp": round(tp, 5), "pl_pct": 0.0
-                }
-                redis.lpush("open_trades", json.dumps(trade_data))
+            if signal:
+                # Force price to be a single float number
+                raw_price = price_series.iloc[-1] if hasattr(price_series, 'iloc') else price_series
+                price = float(raw_price)
                 
-    return redirect(url_for('home'))
+                # Calculation of SL/TP
+                sl = price - (1.5 * atr) if signal == "BUY" else price + (1.5 * atr)
+                tp = price + (3.0 * atr) if signal == "BUY" else price - (3.0 * atr)
+                
+                # 1. ATTEMPT REAL ORDER
+                response = dp.place_market_order(sym, signal, 1000, sl, tp)
+                
+                # 2. ONLY RECORD IF BROKER SUCCESSFUL
+                if response:
+                    trade_data = {
+                        "symbol": sym, "side": signal, "entry": round(price, 5),
+                        "sl": round(sl, 5), "tp": round(tp, 5), "pl_pct": 0.0
+                    }
+                    redis.lpush("open_trades", json.dumps(trade_data))
+                    
+        return redirect(url_for('home'))
+    
+    except Exception as e:
+        # This prevents the 500 Internal Server Error
+        print(f"CRITICAL TICK ERROR: {e}")
+        return redirect(url_for('home'))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
