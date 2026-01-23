@@ -7,7 +7,8 @@ import oandapyV20.endpoints.pricing as pricing
 
 class DataProvider:
     def __init__(self, token, account_id):
-        self.client = API(access_token=token, environment="practice")
+        # Added a 20-second timeout to handle Render's slow wake-up
+        self.client = API(access_token=token, environment="practice", timeout=20)
         self.account_id = account_id
 
     def get_ohlc(self, symbol, granularity="H1", count=50):
@@ -31,9 +32,8 @@ class DataProvider:
         except: return None
 
     def get_live_tick(self, symbol):
-        params = {"instruments": symbol}
         try:
-            r = pricing.PricingInfo(accountID=self.account_id, params=params)
+            r = pricing.PricingInfo(accountID=self.account_id, params={"instruments": symbol})
             self.client.request(r)
             price_data = r.response.get('prices', [{}])[0]
             bid = float(price_data.get('bids', [{}])[0].get('price'))
@@ -46,9 +46,8 @@ class DataProvider:
             r = positions.PositionDetails(accountID=self.account_id, instrument=symbol)
             self.client.request(r)
             pos = r.response.get('position', {})
-            long_units = float(pos.get('long', {}).get('units', 0))
-            short_units = float(pos.get('short', {}).get('units', 0))
-            return abs(long_units) > 0 or abs(short_units) > 0
+            return abs(float(pos.get('long', {}).get('units', 0))) > 0 or \
+                   abs(float(pos.get('short', {}).get('units', 0))) > 0
         except: return False
 
     def get_all_open_positions(self):
@@ -59,17 +58,12 @@ class DataProvider:
         except: return []
 
     def close_all_positions(self):
-        """NEW: Professional safety tool to flatten account on Fridays"""
         open_instruments = self.get_all_open_positions()
         for symbol in open_instruments:
-            # Tell OANDA to close the entire position for this symbol
-            data = {"longUnits": "ALL"} if "_USD" in symbol else {"longUnits": "ALL"} # Simplified
             try:
-                # OANDA specific endpoint to close a position
                 r = positions.PositionClose(accountID=self.account_id, instrument=symbol, data={"longUnits": "ALL", "shortUnits": "ALL"})
                 self.client.request(r)
-            except Exception as e:
-                print(f"Friday Close Error for {symbol}: {e}")
+            except: pass
 
     def place_market_order(self, symbol, side, units, sl, tp):
         order_units = str(units) if side == "BUY" else str(-units)
