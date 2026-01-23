@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- KEEP-ALIVE HACK: Refreshes the page every 300 seconds (5 minutes) -->
+    <!-- This keeps Render awake so the bot is always ready to scan -->
+    <meta http-equiv="refresh" content="300">
     <title>Steven AI Bot Terminal</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -14,32 +17,35 @@
         .buy-badge { color: #02c076; border: 1px solid #02c076; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
         .sell-badge { color: #f84960; border: 1px solid #f84960; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
         .details-pane { background-color: #1e2329; border-radius: 4px; padding: 15px; margin-top: 5px; }
-        .arrow-btn { cursor: pointer; color: #848e9c; font-size: 0.9rem; }
-        .arrow-btn:hover { color: white; }
         .market-closed { background-color: #f8496015; border: 1px solid #f84960; color: #f84960; padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 20px; }
         .market-closing { background-color: #f0b90b15; border: 1px solid #f0b90b; color: #f0b90b; padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 20px; }
+        .error-banner { background-color: #ff4444; color: white; padding: 5px; text-align: center; font-size: 0.8rem; }
     </style>
 </head>
 <body>
+    {% if error %}
+    <div class="error-banner">SYSTEM ALERT: {{ error }}</div>
+    {% endif %}
+
     <nav class="navbar navbar-dark bg-dark border-bottom border-secondary mb-4">
         <div class="container">
-            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.2 WEEKEND SAFE</small></span>
+            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.3 UNSTOPPABLE</small></span>
             <div class="d-flex align-items-center gap-3">
-                <small class="text-muted">Strategy: V3 Sniper</small>
-                <a href="/tick" class="btn btn-sm btn-outline-primary {{ 'disabled' if data_status == 'CLOSED' }}">Manual Scan</a>
+                <small class="text-muted">Strategy: Sniper V3</small>
+                <!-- Manual Scan button now uses a Script to avoid seeing JSON -->
+                <button onclick="runManualScan()" class="btn btn-sm btn-outline-primary {{ 'disabled' if data_status == 'CLOSED' }}">Manual Scan</button>
             </div>
         </div>
     </nav>
 
     <div class="container">
-        <!-- Weekend Safety Banners -->
         {% if data_status == 'CLOSED' %}
         <div class="market-closed">
-            <strong>● MARKET CLOSED:</strong> AI is currently in sleep mode. Scans will resume Sunday 5PM EST.
+            <strong>● MARKET CLOSED:</strong> AI Sleeping. Scans resume Sunday 5PM EST.
         </div>
         {% elif data_status == 'CLOSING' %}
         <div class="market-closing">
-            <strong>● FRIDAY SETTLEMENT:</strong> Market is closing soon. All positions have been flattened for weekend safety.
+            <strong>● FRIDAY SETTLEMENT:</strong> Market closing. Account flattened for safety.
         </div>
         {% endif %}
 
@@ -48,7 +54,7 @@
                 <div class="terminal-card p-4 h-100">
                     <span class="stat-label">Virtual Equity</span>
                     <div class="balance-lg">${{ "{:,.2f}".format(balance) }}</div>
-                    <div class="mt-2 small text-muted">Database: <span class="text-success">{{ db_status }}</span></div>
+                    <div class="mt-2 small text-muted">Next Auto-Scan: <span id="timer">--:--</span></div>
                 </div>
             </div>
             <div class="col-md-8">
@@ -57,22 +63,21 @@
                     <div class="row mt-2">
                         <div class="col-4">Feed: <span class="{{ 'text-success' if data_status == 'OPEN' else 'text-warning' }}">● {{ data_status }}</span></div>
                         <div class="col-4">Logic: <span class="text-success">● {{ logic_status }}</span></div>
-                        <div class="col-4">Risk: <span class="text-info">● 0.5% PER TRADE</span></div>
+                        <div class="col-4">Uptime: <span class="text-info">● 24/7 Active</span></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Logic Console -->
         <div class="terminal-card p-4 mb-4">
-            <span class="stat-label">Logic Console (Latest Scan)</span>
+            <span class="stat-label">AI Logic Console (Last Scan)</span>
             <div class="row mt-3">
                 {% for sym, log in last_logs.items() %}
                 <div class="col-md-4 mb-2">
                     <small class="text-info">{{ sym }}:</small> <small class="text-muted">{{ log }}</small>
                 </div>
                 {% else %}
-                <div class="col-12 text-center py-2 text-muted">Waiting for next scheduled scan...</div>
+                <div class="col-12 text-center py-2 text-muted">Waiting for first automated heartbeat...</div>
                 {% endfor %}
             </div>
         </div>
@@ -88,7 +93,7 @@
                         <div style="width: 25%;" class="{{ 'text-success' if trade.pl_pct >= 0 else 'text-danger' }}">
                             {{ '+' if trade.pl_pct >= 0 }}{{ trade.pl_pct }}%
                         </div>
-                        <div class="arrow-btn" data-bs-toggle="collapse" data-bs-target="#details{{ loop.index }}">
+                        <div class="arrow-btn" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#details{{ loop.index }}">
                             ▼ Details
                         </div>
                     </div>
@@ -105,10 +110,31 @@
                     </div>
                 </div>
                 {% else %}
-                <div class="text-center py-5 text-muted">No active OANDA positions.</div>
+                <div class="text-center py-5 text-muted">Waiting for High-Confluence Setup...</div>
                 {% endfor %}
             </div>
         </div>
     </div>
+
+    <script>
+        // Fix for Manual Scan button so you don't see JSON
+        async function runManualScan() {
+            const btn = event.target;
+            btn.innerText = "Scanning...";
+            btn.classList.add("disabled");
+            await fetch('/tick'); // Hits the engine
+            window.location.reload(); // Reloads the dashboard to show results
+        }
+
+        // Countdown to next auto-refresh
+        let timeLeft = 300;
+        setInterval(() => {
+            if (timeLeft <= 0) return;
+            timeLeft--;
+            let mins = Math.floor(timeLeft / 60);
+            let secs = timeLeft % 60;
+            document.getElementById('timer').innerText = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        }, 1000);
+    </script>
 </body>
 </html>
