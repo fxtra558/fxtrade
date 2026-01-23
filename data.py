@@ -7,8 +7,8 @@ import oandapyV20.endpoints.pricing as pricing
 
 class DataProvider:
     def __init__(self, token, account_id):
-        # Added a 20-second timeout to handle Render's slow wake-up
-        self.client = API(access_token=token, environment="practice", timeout=20)
+        # Removed 'timeout' as it's not supported by this specific library init
+        self.client = API(access_token=token, environment="practice")
         self.account_id = account_id
 
     def get_ohlc(self, symbol, granularity="H1", count=50):
@@ -29,7 +29,9 @@ class DataProvider:
                         "close": float(c['mid']['c'])
                     })
             return pd.DataFrame(data)
-        except: return None
+        except Exception as e:
+            print(f"Data Fetch Error: {e}")
+            return None
 
     def get_live_tick(self, symbol):
         try:
@@ -46,8 +48,9 @@ class DataProvider:
             r = positions.PositionDetails(accountID=self.account_id, instrument=symbol)
             self.client.request(r)
             pos = r.response.get('position', {})
-            return abs(float(pos.get('long', {}).get('units', 0))) > 0 or \
-                   abs(float(pos.get('short', {}).get('units', 0))) > 0
+            long_u = float(pos.get('long', {}).get('units', 0))
+            short_u = float(pos.get('short', {}).get('units', 0))
+            return abs(long_u) > 0 or abs(short_u) > 0
         except: return False
 
     def get_all_open_positions(self):
@@ -61,9 +64,12 @@ class DataProvider:
         open_instruments = self.get_all_open_positions()
         for symbol in open_instruments:
             try:
-                r = positions.PositionClose(accountID=self.account_id, instrument=symbol, data={"longUnits": "ALL", "shortUnits": "ALL"})
+                # 'longUnits': 'ALL' closes both buy and sell positions for that pair
+                data = {"longUnits": "ALL", "shortUnits": "ALL"}
+                r = positions.PositionClose(accountID=self.account_id, instrument=symbol, data=data)
                 self.client.request(r)
-            except: pass
+            except Exception as e:
+                print(f"Friday Close Error: {e}")
 
     def place_market_order(self, symbol, side, units, sl, tp):
         order_units = str(units) if side == "BUY" else str(-units)
