@@ -22,57 +22,41 @@ SYMBOLS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD"]
 INITIAL_BALANCE = 10000.0
 RISK_PER_TRADE = 0.005 
 
-if not redis.exists("balance"):
-    redis.set("balance", INITIAL_BALANCE)
-
-# --- NEW: TIME MANAGEMENT LOGIC ---
+# --- MARKET TIME MANAGEMENT ---
 
 def get_market_status():
     """
-    Checks if the Forex market is open.
-    Forex closes Friday at 5 PM EST and opens Sunday at 5 PM EST.
-    (9 PM UTC Friday to 9 PM UTC Sunday)
+    Forex closes Friday 5 PM EST, opens Sunday 5 PM EST.
+    UTC Translation: Fri 10 PM to Sun 10 PM UTC.
     """
     now_utc = datetime.utcnow()
     day = now_utc.weekday() # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     hour = now_utc.hour
 
-    # Friday after 9 PM UTC -> Market is closing
-    if day == 4 and hour >= 21:
-        return "CLOSING"
-    # Saturday and Sunday before 9 PM UTC -> Market is closed
-    if day == 5 or (day == 6 and hour < 21):
-        return "CLOSED"
-    
+    if day == 4 and hour >= 21: return "CLOSING"
+    if day == 5 or (day == 6 and hour < 21): return "CLOSED"
     return "OPEN"
 
-# --- CORE LOGIC ---
+# --- CORE SETTLEMENT LOGIC ---
 
-def settle_and_manage_exits():
+def settle_and_sync():
+    """Cleans up closed trades and updates balance"""
     try:
-        status = get_market_status()
         broker_positions = dp.get_all_open_positions()
-        
-        # FRIDAY EMERGENCY: If market is closing, wipe the dashboard and broker
-        if status == "CLOSING":
-            dp.close_all_positions()
-            redis.delete("open_trades")
-            print("Weekend Protection: All positions closed.")
-            return
-
         db_trades = redis.lrange("open_trades", 0, -1)
         balance = float(redis.get("balance") or INITIAL_BALANCE)
 
         for t_raw in db_trades:
             trade = json.loads(t_raw.decode('utf-8') if hasattr(t_raw, 'decode') else t_raw)
             if trade['symbol'] not in broker_positions:
-                # Trade finished at broker
+                # Trade finished on OANDA app
                 curr = dp.get_live_tick(trade['symbol']) or trade['entry']
                 win = (curr > trade['entry']) if trade['side']=="BUY" else (curr < trade['entry'])
                 change = (balance * 0.01) if win else -(balance * 0.005)
                 redis.set("balance", balance + change)
                 redis.lrem("open_trades", 1, t_raw)
-    except Exception as e: print(f"Sync Error: {e}")
+    except Exception as e:
+        redis.set("sys_error", f"Sync Error: {str(e)}")
 
 # --- ROUTES ---
 
@@ -81,58 +65,53 @@ def home():
     try:
         status = get_market_status()
         balance = float(redis.get("balance") or INITIAL_BALANCE)
-        
-        # Process trades for UI
-        raw_trades = redis.lrange("open_trades", 0, -1)
         trades = []
-        for t in raw_trades:
+        
+        for t in redis.lrange("open_trades", 0, -1):
             try:
                 trade = json.loads(t.decode('utf-8') if hasattr(t, 'decode') else t)
-                # Only fetch ticks if market is open
                 if status == "OPEN":
                     curr = dp.get_live_tick(trade['symbol'])
                     if curr:
                         trade['current_price'] = round(curr, 5)
                         diff = (curr - trade['entry']) if trade['side'] == "BUY" else (trade['entry'] - curr)
                         trade['pl_pct'] = round((diff / trade['entry']) * 100, 4)
-                else:
-                    trade['current_price'] = "Market Closed"
-                    trade['pl_pct'] = 0.0
                 trades.append(trade)
             except: continue
 
         logs = json.loads(redis.get("last_scan_logs") or "{}")
+        err = redis.get("sys_error")
         
         return render_template('index.html', balance=balance, trades=trades, 
                                db_status="Connected", data_status=status, 
                                logic_status="Active" if status == "OPEN" else "Sleeping",
-                               last_logs=logs)
+                               last_logs=logs, error=err)
     except Exception as e:
-        return f"Dashboard Error: {e}"
+        return f"UI Crash: {e}"
 
 @app.route('/tick')
 def tick():
-    """V3.2 TICK: With Weekend Circuit Breaker"""
-    try:
-        status = get_market_status()
-        
-        # 1. EMERGENCY CLOSE ON FRIDAY
-        if status == "CLOSING":
-            dp.close_all_positions()
-            redis.delete("open_trades")
-            redis.set("last_scan_logs", json.dumps({"System": "Market Closing - All trades flattened."}))
-            return redirect(url_for('home'))
-
-        # 2. DO NOTHING ON WEEKENDS
-        if status == "CLOSED":
-            redis.set("last_scan_logs", json.dumps({"System": "Market Closed - AI Sleeping."}))
-            return redirect(url_for('home'))
-
-        # 3. NORMAL OPERATION
-        settle_and_manage_exits()
+    """
+    ROBOT-OPTIMIZED ROUTE
+    Returns JSON 200 immediately to Cron-job.org to prevent 'Failed' errors.
+    """
+    status = get_market_status()
+    logs = {}
+    
+    # 1. Friday Safety
+    if status == "CLOSING":
+        dp.close_all_positions()
+        redis.delete("open_trades")
+        logs["System"] = "Friday Close: All trades flattened."
+    
+    # 2. Weekend Sleep
+    elif status == "CLOSED":
+        logs["System"] = "Weekend: Markets closed."
+    
+    # 3. Active Trading
+    else:
+        settle_and_sync()
         balance = float(redis.get("balance") or INITIAL_BALANCE)
-        logs = {}
-
         for sym in SYMBOLS:
             if dp.is_position_open(sym):
                 logs[sym] = "Position live."
@@ -146,7 +125,6 @@ def tick():
             signal, price, sl, tp_2r = strat.check_signals()
             
             if signal:
-                # Unit Sizing
                 units = int((balance * RISK_PER_TRADE) / abs(price - sl))
                 if dp.place_market_order(sym, signal, units, sl, tp_2r):
                     trade_data = {"symbol": sym, "side": signal, "entry": round(price, 5),
@@ -157,15 +135,12 @@ def tick():
             else:
                 logs[sym] = "No setup."
 
-        redis.set("last_scan_logs", json.dumps(logs), ex=3600)
+    redis.set("last_scan_logs", json.dumps(logs), ex=3600)
 
-        # Response for Cron-job
-        ua = request.headers.get('User-Agent', '')
-        if "cron-job" in ua.lower(): return jsonify({"status": "success"}), 200
-        
-    except Exception as e: print(f"Tick Crash: {e}")
-        
-    return redirect(url_for('home'))
+    # --- THE FIX FOR CRON-JOB.ORG ---
+    # We return a clean JSON response with a 200 status code. 
+    # This prevents the 'HTTP error' on the cron dashboard.
+    return jsonify({"status": "success", "market": status}), 200
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
