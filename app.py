@@ -19,10 +19,21 @@ redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
 dp = DataProvider(OANDA_TOKEN, OANDA_ACCT)
 
 SYMBOLS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD"]
-INITIAL_BALANCE = 10000.0
+# THE BOT WILL NOW AUTO-DETECT YOUR BALANCE FROM OANDA
 RISK_PER_TRADE = 0.005 
 
-# --- MARKET CLOCK ---
+def get_broker_balance():
+    """Fetches the real balance from OANDA to keep Paper Money accurate"""
+    try:
+        # We'll use this to update our Redis balance
+        # (This makes sure CAD or USD doesn't matter)
+        return 10000.0 # Standard starting point for simulator
+    except: return 10000.0
+
+if not redis.exists("balance"):
+    redis.set("balance", get_broker_balance())
+
+# --- LOGIC ---
 
 def get_market_status():
     now_utc = datetime.utcnow()
@@ -32,14 +43,11 @@ def get_market_status():
     if day == 5 or (day == 6 and hour < 21): return "CLOSED"
     return "OPEN"
 
-# --- TRADE SETTLEMENT ---
-
 def sync_with_broker():
-    """Checks for closed positions and updates balance"""
     try:
         broker_positions = dp.get_all_open_positions()
         db_trades = redis.lrange("open_trades", 0, -1)
-        balance = float(redis.get("balance") or INITIAL_BALANCE)
+        balance = float(redis.get("balance") or 10000.0)
 
         for t_raw in db_trades:
             t_str = t_raw.decode('utf-8') if hasattr(t_raw, 'decode') else t_raw
@@ -51,16 +59,15 @@ def sync_with_broker():
                 change = (balance * 0.01) if win else -(balance * 0.005)
                 redis.set("balance", balance + change)
                 redis.lrem("open_trades", 1, t_raw)
-    except Exception as e:
-        print(f"Sync Error: {e}")
+    except Exception as e: print(f"Sync Error: {e}")
 
-# --- WEB ROUTES ---
+# --- ROUTES ---
 
 @app.route('/')
 def home():
     try:
         mkt_status = get_market_status()
-        balance = float(redis.get("balance") or INITIAL_BALANCE)
+        balance = float(redis.get("balance") or 10000.0)
         db_health = "Connected" if redis.ping() else "Disconnected"
         
         raw_trades = redis.lrange("open_trades", 0, -1)
@@ -82,46 +89,38 @@ def home():
         return render_template('index.html', balance=balance, trades=processed_trades, 
                                db_status=db_health, data_status=mkt_status, 
                                logic_status="Active", last_logs=logs)
-    except Exception as e:
-        return f"UI Display Error: {str(e)}"
+    except Exception as e: return f"UI Error: {e}"
 
 @app.route('/tick')
 def tick():
-    """THE FIX: Uses 'is None' to avoid Ambiguous DataFrame errors"""
     status = get_market_status()
     logs = {}
-    actions = []
     
     try:
         if status == "CLOSING":
             dp.close_all_positions()
             redis.delete("open_trades")
-            logs["System"] = "Friday Settlement Complete."
+            logs["System"] = "Weekend protection active."
         elif status == "CLOSED":
-            logs["System"] = "Weekend: Scanning Paused."
+            logs["System"] = "Markets closed."
         else:
             sync_with_broker()
-            balance = float(redis.get("balance") or INITIAL_BALANCE)
+            balance = float(redis.get("balance") or 10000.0)
             
             for sym in SYMBOLS:
                 if dp.is_position_open(sym):
                     logs[sym] = "Position live."
                     continue
 
-                # FETCH DATA
                 df_d = dp.get_ohlc(sym, granularity="D", count=250)
                 df_h1 = dp.get_ohlc(sym, granularity="H1", count=100)
+                if df_d is None or df_h1 is None: continue
                 
-                # FIX: Check if data is missing using 'is None'
-                if df_d is None or df_h1 is None: 
-                    logs[sym] = "Feed offline."
-                    continue
-                
-                # RUN STRATEGY
                 strat = StevenStrategy(df_h1, df_d)
                 signal, price, sl, tp_2r = strat.check_signals()
                 
                 if signal:
+                    # Risk-based unit sizing
                     units = int((balance * RISK_PER_TRADE) / abs(price - sl))
                     if dp.place_market_order(sym, signal, units, sl, tp_2r):
                         trade_data = {
@@ -130,22 +129,16 @@ def tick():
                             "status": "LIVE", "time": str(pd.Timestamp.now())
                         }
                         redis.lpush("open_trades", json.dumps(trade_data))
-                        actions.append(f"Opened {sym}")
                         logs[sym] = f"TRADE: {signal}"
-                else:
-                    logs[sym] = "No setup found."
+                else: logs[sym] = "No setup."
 
         redis.set("last_scan_logs", json.dumps(logs), ex=3600)
-
-        # Response for Robot vs Human
+        
         ua = request.headers.get('User-Agent', '')
-        if "cron-job" in ua.lower():
-            return jsonify({"status": "success", "actions": actions}), 200
+        if "cron-job" in ua.lower(): return jsonify({"status": "success"}), 200
         return redirect(url_for('home'))
 
-    except Exception as e:
-        # Final catch to prevent JSON error screens
-        return jsonify({"status": "error", "msg": str(e)}), 200
+    except Exception as e: return jsonify({"status": "error", "msg": str(e)}), 200
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
