@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, render_template, redirect, url_for, jsonify
+from flask import Flask, render_template, redirect, url_for, jsonify, request
 from upstash_redis import Redis
 from data import DataProvider
 from strategy import StevenStrategy
@@ -8,7 +8,7 @@ import pandas as pd
 
 app = Flask(__name__)
 
-# --- SECURE CONFIG ---
+# --- SECURE CONFIG & SECRETS ---
 REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 OANDA_TOKEN = os.environ.get("OANDA_API_KEY")
@@ -17,123 +17,129 @@ OANDA_ACCT = os.environ.get("OANDA_ACCOUNT_ID")
 redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
 dp = DataProvider(OANDA_TOKEN, OANDA_ACCT)
 
+# Global Settings
 SYMBOLS = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD"]
-RISK_PER_TRADE = 0.005  # 0.5% Risk as requested
+INITIAL_BALANCE = 10000.0
+RISK_PER_TRADE = 0.005  # 0.5% risk
 
 if not redis.exists("balance"):
-    redis.set("balance", 10000.0)
+    redis.set("balance", INITIAL_BALANCE)
 
-# --- ADVANCED LOGIC FUNCTIONS ---
+# --- HELPER LOGIC ---
 
 def calculate_position_size(symbol, entry, sl, balance):
-    """Calculates units to trade so we only lose exactly 0.5% of balance"""
+    """Calculates units to trade based on 0.5% risk"""
     try:
-        risk_amount = balance * RISK_PER_TRADE
-        stop_distance = abs(entry - sl)
-        if stop_distance == 0: return 1000
-        
-        # Simple unit calculation for Forex
-        units = int(risk_amount / stop_distance)
-        return max(units, 1) # Minimum 1 unit
+        risk_dollars = balance * RISK_PER_TRADE
+        stop_dist = abs(entry - sl)
+        if stop_dist == 0: return 1000
+        units = int(risk_dollars / stop_dist)
+        return max(units, 1)
     except: return 1000
 
-def settle_and_manage_exits():
-    """
-    STEVEN V3 EXIT LOGIC:
-    1. If trade is gone from OANDA -> SL hit -> Deduct 0.5% from balance.
-    2. If trade hits 2R -> Bank 50% profit -> Move SL to Break Even (Redis side).
-    3. If trend breaks (Price crosses EMA) -> Exit Remainder.
-    """
+def get_clean_trades():
+    """Retrieves trades and handles data decoding"""
+    raw_trades = redis.lrange("open_trades", 0, -1)
+    trades = []
+    for t in raw_trades:
+        try:
+            t_str = t.decode('utf-8') if hasattr(t, 'decode') else t
+            trades.append(json.loads(t_str))
+        except: continue
+    return trades
+
+def manage_exits():
+    """Syncs with OANDA to settle profits/losses and handle 2R partials"""
     try:
         broker_positions = dp.get_all_open_positions()
         db_trades = redis.lrange("open_trades", 0, -1)
-        current_bal = float(redis.get("balance"))
+        balance = float(redis.get("balance") or INITIAL_BALANCE)
 
         for t_raw in db_trades:
             trade = json.loads(t_raw.decode('utf-8') if hasattr(t_raw, 'decode') else t_raw)
             sym = trade['symbol']
             
-            # A. Check if broker closed it (Hard SL hit)
+            # 1. If trade hit SL/TP at broker
             if sym not in broker_positions:
-                redis.set("balance", current_bal - (current_bal * RISK_PER_TRADE))
+                live_price = dp.get_live_tick(sym) or trade['entry']
+                win = (live_price > trade['entry']) if trade['side']=="BUY" else (live_price < trade['entry'])
+                # Settle balance
+                change = (balance * 0.01) if win else -(balance * 0.005)
+                redis.set("balance", balance + change)
                 redis.lrem("open_trades", 1, t_raw)
                 continue
-
-            # B. Fetch Live Data for Exit Monitoring
-            df = dp.get_ohlc(sym, granularity="H1", count=50)
-            if df is None: continue
-            curr_price = float(df['close'].iloc[-1])
-            ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
-
-            # C. Check Partial TP (2R)
+            
+            # 2. Monitor for 2R Partial TP (Manual tracker in Redis)
             if trade.get('status') == "LIVE":
-                reached_2r = (curr_price >= trade['tp_2r']) if trade['side'] == "BUY" else (curr_price <= trade['tp_2r'])
-                if reached_2r:
-                    # Bank half of the 1% reward (since we risk 0.5%, 2R = 1% gain)
-                    redis.set("balance", current_bal + (current_bal * 0.005))
-                    trade['status'] = "BE" # Set to Break Even status
-                    trade['sl'] = trade['entry'] # Move SL to Entry
-                    redis.lrem("open_trades", 1, t_raw)
-                    redis.lpush("open_trades", json.dumps(trade))
-                    print(f"BANKED 2R: {sym}")
+                curr = dp.get_live_tick(sym)
+                if curr:
+                    hit_2r = (curr >= trade['tp_2r']) if trade['side']=="BUY" else (curr <= trade['tp_2r'])
+                    if hit_2r:
+                        redis.set("balance", balance + (balance * 0.005)) # Bank 0.5%
+                        trade['status'] = "BE" # Move to Break Even
+                        redis.lrem("open_trades", 1, t_raw)
+                        redis.lpush("open_trades", json.dumps(trade))
 
-            # D. Check Trend Break Exit (Remaining 50%)
-            if trade.get('status') == "BE":
-                trend_broken = (curr_price < ema20) if trade['side'] == "BUY" else (curr_price > ema20)
-                if trend_broken:
-                    # Calculate final profit from remaining half
-                    p_l_final = (curr_price - trade['entry']) if trade['side'] == "BUY" else (trade['entry'] - curr_price)
-                    # (Simplified for paper money)
-                    redis.set("balance", current_bal + 50.0) 
-                    redis.lrem("open_trades", 1, t_raw)
-                    print(f"TREND BREAK EXIT: {sym}")
-
-    except Exception as e:
-        print(f"Exit Management Error: {e}")
+    except Exception as e: print(f"Exit Error: {e}")
 
 # --- WEB ROUTES ---
 
 @app.route('/')
 def home():
+    """The Professional Dashboard"""
     try:
-        balance = float(redis.get("balance") or 10000.0)
-        trades = []
-        for t in redis.lrange("open_trades", 0, -1):
-            try:
-                trade = json.loads(t.decode('utf-8') if hasattr(t, 'decode') else t)
-                live_price = dp.get_live_tick(trade['symbol'])
-                if live_price:
-                    trade['current_price'] = round(live_price, 5)
-                    diff = (live_price - trade['entry']) if trade['side'] == "BUY" else (trade['entry'] - live_price)
-                    trade['pl_pct'] = round((diff / trade['entry']) * 100, 3)
-                trades.append(trade)
-            except: continue
+        # Health Checks
+        db_health = "Connected" if redis.ping() else "Disconnected"
+        test_df = dp.get_ohlc("EUR_USD", count=1)
+        data_health = "Online" if test_df is not None else "Offline"
+        
+        balance = float(redis.get("balance") or INITIAL_BALANCE)
+        raw_logs = redis.get("last_scan_logs")
+        last_logs = json.loads(raw_logs) if raw_logs else {}
+        
+        # Calculate Live P/L for display
+        trades = get_clean_trades()
+        for t in trades:
+            curr = dp.get_live_tick(t['symbol'])
+            if curr:
+                t['current_price'] = round(curr, 5)
+                diff = (curr - t['entry']) if t['side'] == "BUY" else (t['entry'] - curr)
+                t['pl_pct'] = round((diff / t['entry']) * 100, 4)
+            else:
+                t['current_price'] = "Syncing..."
+                t['pl_pct'] = 0.0
 
         return render_template('index.html', balance=balance, trades=trades, 
-                               db_status="Connected", data_status="Online", logic_status="V3 Sniper")
+                               db_status=db_health, data_status=data_health, 
+                               logic_status="V3 Sniper", last_logs=last_logs)
     except Exception as e:
-        return f"UI Error: {e}"
+        return f"Dashboard UI Error: {str(e)}"
 
 @app.route('/tick')
 def tick():
-    """V3 SNIPER TICK: MTF + Volatility + Risk Sizing"""
+    """The Automated Strategy Engine"""
     try:
-        settle_and_manage_exits()
-        balance = float(redis.get("balance") or 10000.0)
+        manage_exits()
+        balance = float(redis.get("balance") or INITIAL_BALANCE)
+        logs = {}
+        actions = []
 
         for sym in SYMBOLS:
-            if dp.is_position_open(sym): continue
+            if dp.is_position_open(sym):
+                logs[sym] = "Position live."
+                continue
 
             df_d = dp.get_ohlc(sym, granularity="D", count=250)
             df_h1 = dp.get_ohlc(sym, granularity="H1", count=100)
-            if df_d is None or df_h1 is None: continue
+            if df_d is None or df_h1 is None: 
+                logs[sym] = "Data Offline."
+                continue
             
             strat = StevenStrategy(df_h1, df_d)
             signal, price, sl, tp_2r = strat.check_signals()
             
             if signal:
                 units = calculate_position_size(sym, price, sl, balance)
-                
                 if dp.place_market_order(sym, signal, units, sl, tp_2r):
                     trade_data = {
                         "symbol": sym, "side": signal, "entry": round(price, 5),
@@ -141,11 +147,25 @@ def tick():
                         "status": "LIVE", "time": str(pd.Timestamp.now())
                     }
                     redis.lpush("open_trades", json.dumps(trade_data))
+                    actions.append(f"Opened {sym}")
+                    logs[sym] = f"TRADE: {signal}"
+                else:
+                    logs[sym] = "Broker rejected."
+            else:
+                logs[sym] = "Searching..."
+
+        redis.set("last_scan_logs", json.dumps(logs), ex=3600)
+
+        # --- FIX: SUCCESS RESPONSE FOR CRON-JOB.ORG ---
+        ua = request.headers.get('User-Agent', '')
+        if "cron-job.org" in ua.lower():
+            return jsonify({"status": "success", "actions": actions}), 200
+        
+        return redirect(url_for('home'))
                     
     except Exception as e:
         print(f"Tick Crash: {e}")
-        
-    return redirect(url_for('home'))
+        return jsonify({"status": "error", "msg": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
