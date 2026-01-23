@@ -16,17 +16,33 @@
         .details-pane { background-color: #1e2329; border-radius: 4px; padding: 15px; margin-top: 5px; }
         .arrow-btn { cursor: pointer; color: #848e9c; font-size: 0.9rem; }
         .arrow-btn:hover { color: white; }
+        .market-closed { background-color: #f8496015; border: 1px solid #f84960; color: #f84960; padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 20px; }
+        .market-closing { background-color: #f0b90b15; border: 1px solid #f0b90b; color: #f0b90b; padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 20px; }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark bg-dark border-bottom border-secondary mb-4">
         <div class="container">
-            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.2 OANDA LIVE</small></span>
-            <a href="/tick" class="btn btn-sm btn-outline-primary">Manual Scan</a>
+            <span class="navbar-brand mb-0 h1">STEVEN AI TRADER <small class="text-muted" style="font-size: 0.6rem;">v1.2 WEEKEND SAFE</small></span>
+            <div class="d-flex align-items-center gap-3">
+                <small class="text-muted">Strategy: V3 Sniper</small>
+                <a href="/tick" class="btn btn-sm btn-outline-primary {{ 'disabled' if data_status == 'CLOSED' }}">Manual Scan</a>
+            </div>
         </div>
     </nav>
 
     <div class="container">
+        <!-- Weekend Safety Banners -->
+        {% if data_status == 'CLOSED' %}
+        <div class="market-closed">
+            <strong>● MARKET CLOSED:</strong> AI is currently in sleep mode. Scans will resume Sunday 5PM EST.
+        </div>
+        {% elif data_status == 'CLOSING' %}
+        <div class="market-closing">
+            <strong>● FRIDAY SETTLEMENT:</strong> Market is closing soon. All positions have been flattened for weekend safety.
+        </div>
+        {% endif %}
+
         <div class="row g-4 mb-4">
             <div class="col-md-4">
                 <div class="terminal-card p-4 h-100">
@@ -37,12 +53,27 @@
             </div>
             <div class="col-md-8">
                 <div class="terminal-card p-4 h-100">
-                    <span class="stat-label">OANDA Feed Status</span>
+                    <span class="stat-label">AI System Diagnostics</span>
                     <div class="row mt-2">
-                        <div class="col-6">Feed: <span class="text-success">● {{ data_status }}</span></div>
-                        <div class="col-6">Logic: <span class="text-success">● Operational</span></div>
+                        <div class="col-4">Feed: <span class="{{ 'text-success' if data_status == 'OPEN' else 'text-warning' }}">● {{ data_status }}</span></div>
+                        <div class="col-4">Logic: <span class="text-success">● {{ logic_status }}</span></div>
+                        <div class="col-4">Risk: <span class="text-info">● 0.5% PER TRADE</span></div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Logic Console -->
+        <div class="terminal-card p-4 mb-4">
+            <span class="stat-label">Logic Console (Latest Scan)</span>
+            <div class="row mt-3">
+                {% for sym, log in last_logs.items() %}
+                <div class="col-md-4 mb-2">
+                    <small class="text-info">{{ sym }}:</small> <small class="text-muted">{{ log }}</small>
+                </div>
+                {% else %}
+                <div class="col-12 text-center py-2 text-muted">Waiting for next scheduled scan...</div>
+                {% endfor %}
             </div>
         </div>
 
@@ -54,8 +85,8 @@
                     <div class="d-flex justify-content-between align-items-center p-3 border-bottom border-secondary">
                         <div style="width: 20%;"><strong>{{ trade.symbol }}</strong></div>
                         <div style="width: 15%;"><span class="{{ 'buy-badge' if trade.side == 'BUY' else 'sell-badge' }}">{{ trade.side }}</span></div>
-                        <div style="width: 25%;" class="{{ 'text-success' if trade.get('pl_pct', 0) >= 0 else 'text-danger' }}">
-                            {{ '+' if trade.get('pl_pct', 0) >= 0 }}{{ trade.get('pl_pct', 0) }}%
+                        <div style="width: 25%;" class="{{ 'text-success' if trade.pl_pct >= 0 else 'text-danger' }}">
+                            {{ '+' if trade.pl_pct >= 0 }}{{ trade.pl_pct }}%
                         </div>
                         <div class="arrow-btn" data-bs-toggle="collapse" data-bs-target="#details{{ loop.index }}">
                             ▼ Details
@@ -66,15 +97,15 @@
                         <div class="details-pane">
                             <div class="row text-center">
                                 <div class="col-3"><small class="stat-label d-block">Entry</small> {{ trade.entry }}</div>
-                                <div class="col-3"><small class="stat-label d-block">Live</small> <span class="text-info">{{ trade.get('current_price', '---') }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">Live</small> <span class="text-info">{{ trade.current_price }}</span></div>
                                 <div class="col-3"><small class="stat-label d-block">SL</small> <span class="text-danger">{{ trade.sl }}</span></div>
-                                <div class="col-3"><small class="stat-label d-block">TP</small> <span class="text-success">{{ trade.tp }}</span></div>
+                                <div class="col-3"><small class="stat-label d-block">TP (2R)</small> <span class="text-success">{{ trade.tp_2r }}</span></div>
                             </div>
                         </div>
                     </div>
                 </div>
                 {% else %}
-                <div class="text-center py-5 text-muted">No OANDA positions active. Scanning...</div>
+                <div class="text-center py-5 text-muted">No active OANDA positions.</div>
                 {% endfor %}
             </div>
         </div>
