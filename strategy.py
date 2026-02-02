@@ -1,58 +1,41 @@
 import pandas as pd
-import numpy as np
+from datetime import datetime, time
 
-class InstitutionalFlowStrategy:
+class InstitutionalStrategy:
     def __init__(self, df_m15, df_daily):
-        self.df = df_m15       # 15-minute for execution
-        self.df_daily = df_daily # Daily for levels
-        
-    def calculate_levels(self):
-        # 1. Get Previous Day High/Low (The Liquidity)
-        prev_day = self.df_daily.iloc[-2] # The completed yesterday candle
-        self.pdh = prev_day['high']
-        self.pdl = prev_day['low']
-        
-        # 2. Daily Bias (Is the market overall bullish or bearish?)
-        # Simple Expert Rule: If yesterday closed higher than it opened, bias is Bullish
-        self.bullish_bias = prev_day['close'] > prev_day['open']
+        self.df = df_m15
+        self.df_daily = df_daily
 
     def check_signals(self):
-        self.calculate_levels()
+        # 1. TIME FILTER: New York Killzone (12:00 - 15:30 UTC)
+        current_time_utc = self.df.index[-1].time()
+        start = time(12, 0)
+        end = time(15, 30)
         
-        # Get current state
+        if not (start <= current_time_utc <= end):
+            return None, None, None, None
+
+        # 2. LIQUIDITY LEVELS (Previous Day High/Low)
+        prev_day = self.df_daily.iloc[-2]
+        pdh = prev_day['high']
+        pdl = prev_day['low']
+        
+        # 3. CURRENT PRICE ACTION (M15)
         now = self.df.iloc[-1]
         prev = self.df.iloc[-2]
-        current_time = self.df.index[-1].time()
         
-        # 3. TIME FILTER (Expert's Secret: Only trade the "Killzone")
-        # New York Open: 8:00 AM - 11:00 AM EST
-        is_ny_session = time(8, 0) <= current_time <= time(11, 0)
-        if not is_ny_session:
-            return None, "Wait for NY Session"
+        # BUY: Price swept PDL (dropped below) and closed back above it
+        if prev['low'] < pdl and now['close'] > pdl:
+            price = now['close']
+            sl = now['low'] - 0.0005 # Tight SL below the sweep
+            tp = price + ((price - sl) * 2.5) # 1:2.5 RR
+            return "BUY", price, sl, tp
 
-        # 4. THE TRAP & REVERSAL LOGIC (TJR Style)
-        
-        # --- LONG SETUP ---
-        # A) Price must have dropped BELOW yesterday's low (The Liquidity Sweep)
-        # B) Current 15m candle must close back ABOVE yesterday's low (The Rejection)
-        # C) Trend Bias should be Bullish
-        if self.bullish_bias:
-            if prev['low'] < self.pdl and now['close'] > self.pdl:
-                price = now['close']
-                # Risk management: SL below the recent low, Target 2x Risk
-                sl = now['low'] - (price * 0.001) 
-                tp = price + ((price - sl) * 2.5) 
-                return "BUY", price, sl, tp
+        # SELL: Price swept PDH (pushed above) and closed back below it
+        if prev['high'] > pdh and now['close'] < pdh:
+            price = now['close']
+            sl = now['high'] + 0.0005
+            tp = price - ((sl - price) * 2.5)
+            return "SELL", price, sl, tp
 
-        # --- SHORT SETUP ---
-        # A) Price must have pushed ABOVE yesterday's high (The Sweep)
-        # B) Current 15m candle must close back BELOW yesterday's high (The Rejection)
-        # C) Trend Bias should be Bearish
-        if not self.bullish_bias:
-            if prev['high'] > self.pdh and now['close'] < self.pdh:
-                price = now['close']
-                sl = now['high'] + (price * 0.001)
-                tp = price - ((sl - price) * 2.5)
-                return "SELL", price, sl, tp
-
-        return None, "Scanning for Liquidity Sweep..."
+        return None, None, None, None
