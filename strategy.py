@@ -1,24 +1,24 @@
 import pandas as pd
 import numpy as np
 
-class StevenStrategy:
+class InstitutionalStrategy:
     def __init__(self, df_h1, df_h4):
         self.df = df_h1
         self.df_h4 = df_h4
         
         # --- PRO RISK SETTINGS ---
         self.sl_multiplier = 1.5      # 1.5x ATR Stop Loss
-        self.reward_risk_ratio = 2.0  # 2R Target
+        self.reward_risk_ratio = 2.0  # 2.0R Target (Win $200 for every $100 risked)
 
     def calculate_indicators(self):
-        # 1. H4 Trend Bias (The Filter)
-        # 50 EMA on H4 is a professional mid-term trend indicator
+        # 1. H4 Trend Bias (The Big Picture)
+        # We use a 50 EMA on H4. If price is above, we only BUY.
         self.df_h4['ema50'] = self.df_h4['close'].ewm(span=50, adjust=False).mean()
 
-        # 2. H1 Indicators (The Trigger)
+        # 2. H1 Indicators (The Execution)
         self.df['ema20'] = self.df['close'].ewm(span=20, adjust=False).mean()
         
-        # ATR for volatility-based SL
+        # ATR for volatility-adjusted Stop Loss
         high_low = self.df['high'] - self.df['low']
         high_cp = abs(self.df['high'] - self.df['close'].shift())
         low_cp = abs(self.df['low'] - self.df['close'].shift())
@@ -32,35 +32,34 @@ class StevenStrategy:
         h4 = self.df_h4.iloc[-1]
         
         # --- 1. DIRECTION (H4 Filter) ---
-        # Is the 4-hour trend moving?
         is_h4_bullish = h4['close'] > h4['ema50']
         is_h4_bearish = h4['close'] < h4['ema50']
 
-        # --- 2. VALUE (H1 Pullback) ---
-        # Is price currently "cheap" in an uptrend (near/below EMA)?
-        # Or "expensive" in a downtrend (near/above EMA)?
-        h1_buy_pullback = h1['close'] <= (h1['ema20'] + (h1['atr'] * 0.5))
-        h1_sell_pullback = h1['close'] >= (h1['ema20'] - (h1['atr'] * 0.5))
+        # --- 2. VALUE (H1 Pullback Zone) ---
+        # We look for price to be near the EMA 20 (The 'Spring' effect)
+        h1_buy_zone = h1['close'] <= (h1['ema20'] + (h1['atr'] * 0.5))
+        h1_sell_zone = h1['close'] >= (h1['ema20'] - (h1['atr'] * 0.5))
 
-        # --- 3. TRIGGER (The "Breakout" of the Pullback) ---
-        # We enter when the current price breaks the HIGH of the previous hourly candle (for BUY)
-        # This proves momentum is returning.
+        # --- 3. MOMENTUM TRIGGER (Structural Break) ---
+        # Instead of a 'shape', we wait for price to break the previous candle's high/low
         bullish_trigger = h1['close'] > prev_h1['high']
         bearish_trigger = h1['close'] < prev_h1['low']
 
-        # --- FINAL AGGREGATED LOGIC ---
+        # --- 4. RISK MATH ---
         price = float(h1['close'])
         atr = float(h1['atr'])
         risk = atr * self.sl_multiplier
 
-        # BUY Logic: H4 Trend Up + H1 Pullback + Momentum Break
-        if is_h4_bullish and h1_buy_pullback and bullish_trigger:
+        # --- FINAL AGGREGATED LOGIC ---
+        
+        # BUY: H4 Trend Up + H1 Price is 'Cheap' + Momentum breaking higher
+        if is_h4_bullish and h1_buy_zone and bullish_trigger:
             sl = price - risk
             tp = price + (risk * self.reward_risk_ratio)
             return "BUY", price, sl, tp
         
-        # SELL Logic: H4 Trend Down + H1 Pullback + Momentum Break
-        if is_h4_bearish and h1_sell_pullback and bearish_trigger:
+        # SELL: H4 Trend Down + H1 Price is 'Expensive' + Momentum breaking lower
+        if is_h4_bearish and h1_sell_zone and bearish_trigger:
             sl = price + risk
             tp = price - (risk * self.reward_risk_ratio)
             return "SELL", price, sl, tp
