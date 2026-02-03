@@ -3,7 +3,7 @@ import json
 from flask import Flask, render_template, redirect, url_for, jsonify, request
 from upstash_redis import Redis
 from data import DataProvider
-from strategy import StevenStrategy
+from strategy import InstitutionalStrategy  # MATCHES THE NEW NAME
 import pandas as pd
 from datetime import datetime
 
@@ -28,7 +28,6 @@ def get_market_status():
     now_utc = datetime.utcnow()
     day = now_utc.weekday() 
     hour = now_utc.hour
-    # Friday 9 PM UTC Close, Sunday 9 PM UTC Open
     if day == 4 and hour >= 21: return "CLOSING"
     if day == 5 or (day == 6 and hour < 21): return "CLOSED"
     return "OPEN"
@@ -36,7 +35,7 @@ def get_market_status():
 # --- TRADE SYNC ---
 
 def sync_with_broker():
-    """Checks if OANDA closed trades and updates the Virtual balance"""
+    """Checks for closed positions at OANDA and updates local balance"""
     try:
         broker_positions = dp.get_all_open_positions()
         db_trades = redis.lrange("open_trades", 0, -1)
@@ -47,6 +46,7 @@ def sync_with_broker():
             trade = json.loads(t_str)
             
             if trade['symbol'] not in broker_positions:
+                # Trade closed at OANDA (Hit SL or TP)
                 curr = dp.get_live_tick(trade['symbol']) or trade['entry']
                 win = (curr > trade['entry']) if trade['side']=="BUY" else (curr < trade['entry'])
                 # Math: 1.0% gain on win (2R), 0.5% loss on SL
@@ -56,13 +56,15 @@ def sync_with_broker():
     except Exception as e:
         print(f"Sync Error: {e}")
 
-# --- ROUTES ---
+# --- WEB ROUTES ---
 
 @app.route('/')
 def home():
+    """The Main Trading Terminal Dashboard"""
     try:
         mkt_status = get_market_status()
         balance = float(redis.get("balance") or INITIAL_BALANCE)
+        db_health = "Connected" if redis.ping() else "Disconnected"
         
         raw_trades = redis.lrange("open_trades", 0, -1)
         processed_trades = []
@@ -81,14 +83,14 @@ def home():
 
         logs = json.loads(redis.get("last_scan_logs") or "{}")
         return render_template('index.html', balance=balance, trades=processed_trades, 
-                               db_status="Connected", data_status=mkt_status, 
+                               db_status=db_health, data_status=mkt_status, 
                                logic_status="V4 Adaptive", last_logs=logs)
     except Exception as e:
         return f"UI Display Error: {str(e)}"
 
 @app.route('/tick')
 def tick():
-    """V4 TICK: Multi-Timeframe (H4 Bias + H1 Execution)"""
+    """THE BOT HEARTBEAT: Optimized for Cron-job and Manual Scan"""
     status = get_market_status()
     logs = {}
     actions = []
@@ -97,9 +99,9 @@ def tick():
         if status == "CLOSING":
             dp.close_all_positions()
             redis.delete("open_trades")
-            logs["System"] = "Weekend protection: Flattened."
+            logs["System"] = "Weekend protection: Positions Closed."
         elif status == "CLOSED":
-            logs["System"] = "Markets closed."
+            logs["System"] = "Market Closed. AI Sleeping."
         else:
             sync_with_broker()
             balance = float(redis.get("balance") or INITIAL_BALANCE)
@@ -109,7 +111,7 @@ def tick():
                     logs[sym] = "Position live."
                     continue
 
-                # FETCH MULTI-TIMEFRAME DATA
+                # FETCH MULTI-TIMEFRAME DATA (H4 for bias, H1 for entry)
                 df_h4 = dp.get_ohlc(sym, granularity="H4", count=100)
                 df_h1 = dp.get_ohlc(sym, granularity="H1", count=100)
                 
@@ -117,22 +119,18 @@ def tick():
                     logs[sym] = "Data Feed Offline."
                     continue
                 
-                # RUN ADAPTIVE STRATEGY
-                strat = StevenStrategy(df_h1, df_h4)
-                signal, price_data, sl, tp = strat.check_signals()
+                # RUN INSTITUTIONAL STRATEGY
+                strat = InstitutionalStrategy(df_h1, df_h4)
+                signal, price, sl, tp = strat.check_signals()
                 
                 if signal:
-                    # Convert price to float safely
-                    price = float(price_data.iloc[-1]) if hasattr(price_data, 'iloc') else float(price_data)
-                    
-                    # Risk-based sizing
+                    # Risk-based unit sizing (0.5% risk)
                     units = int((balance * RISK_PER_TRADE) / abs(price - sl))
-                    
                     if dp.place_market_order(sym, signal, units, sl, tp):
                         trade_data = {
                             "symbol": sym, "side": signal, "entry": round(price, 5),
                             "sl": round(float(sl), 5), "tp_2r": round(float(tp), 5), 
-                            "status": "LIVE", "time": str(pd.Timestamp.now())
+                            "status": "LIVE", "time": str(pd.Timestamp.now().strftime('%m-%d %H:%M'))
                         }
                         redis.lpush("open_trades", json.dumps(trade_data))
                         actions.append(f"Opened {sym}")
@@ -142,13 +140,14 @@ def tick():
 
         redis.set("last_scan_logs", json.dumps(logs), ex=3600)
         
-        # Cron-job Friendly Response
+        # Determine Response Type
         ua = request.headers.get('User-Agent', '')
         if "cron-job" in ua.lower():
-            return jsonify({"status": "success", "actions": actions}), 200
+            return jsonify({"status": "success", "market": status}), 200
         return redirect(url_for('home'))
 
     except Exception as e:
+        print(f"Tick Crash: {e}")
         return jsonify({"status": "error", "msg": str(e)}), 200
 
 if __name__ == "__main__":
