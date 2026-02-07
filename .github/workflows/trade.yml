@@ -2,32 +2,27 @@ name: Hourly Trading Robot
 
 on:
   schedule:
-    # This triggers the bot exactly at the start of every hour (24 times a day)
     - cron: '0 * * * *'
-  # This allows you to click the "Run workflow" button manually for testing
   workflow_dispatch:
 
 jobs:
-  build:
+  trade:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. Pull the code from your repository into the robot's environment
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. Install the Python engine
+      # Use Python 3.10 for maximum stability with OANDA
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # 3. Install the specific trading libraries needed for Steven's strategy
+      # FIX: Added 'requests' to the install list
       - name: Install Dependencies
         run: |
-          pip install pandas oandapyV20 upstash-redis ta
+          pip install pandas oandapyV20 upstash-redis ta requests
 
-      # 4. Run the trading script using your secure secrets
       - name: Run Trading Bot
         env:
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
