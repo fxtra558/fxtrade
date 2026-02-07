@@ -4,3 +4,4 @@ oandapyV20
 requests
 pandas
 gunicorn
+ta
