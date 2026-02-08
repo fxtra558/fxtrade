@@ -7,23 +7,42 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
-        body { background-color: #0b0e11; color: #eaecef; font-family: 'Inter', sans-serif; padding-top: 30px; }
-        .terminal-card { background-color: #1e2329; border: 1px solid #2b2f36; border-radius: 12px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-        .stat-label { color: #848e9c; font-size: 0.75rem; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; }
-        .balance-lg { font-size: 3rem; color: #02c076; font-weight: 900; }
+        
+        /* Background and Core Text */
+        body { background-color: #0b0e11; color: #ffffff; font-family: 'Inter', sans-serif; padding-top: 30px; }
+        
+        /* Cards and Borders */
+        .terminal-card { background-color: #1e2329; border: 1px solid #474d57; border-radius: 12px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.8); }
+        
+        /* High Contrast Labels */
+        .stat-label { color: #f0b90b; font-size: 0.75rem; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; }
+        .text-muted { color: #b7bdc6 !important; } /* Lighter grey for visibility */
+        
+        /* Equity Balance */
+        .balance-lg { font-size: 3rem; color: #02c076; font-weight: 900; text-shadow: 0 0 15px rgba(2, 192, 118, 0.3); }
+        
+        /* Badges and Tickers */
         .buy { color: #02c076; font-weight: bold; }
         .sell { color: #f84960; font-weight: bold; }
-        .log-box { font-size: 13px; color: #b7bdc6; line-height: 1.6; }
-        .trade-row { border-bottom: 1px solid #2b2f36; padding: 15px 0; }
+        .live-price { color: #47bcff; font-family: monospace; font-weight: bold; font-size: 1.1rem; }
+        
+        /* Logic Console Logs */
+        .log-box { font-size: 13px; color: #ffffff; line-height: 1.6; }
+        .log-item { border-bottom: 1px solid #2b2f36; padding: 8px 0; }
+        .status-msg { color: #ffffff; font-style: italic; }
+
+        /* Trade Rows */
+        .trade-row { border-bottom: 1px solid #474d57; padding: 20px 0; }
         .trade-row:last-child { border-bottom: none; }
-        .live-price { color: #47bcff; font-family: monospace; }
+        
+        .version-badge { background-color: #333; color: #ffffff; border: 1px solid #f0b90b; font-size: 0.7rem; padding: 5px 10px; border-radius: 6px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h1 style="font-weight: 900; letter-spacing: -1px;">STEVEN AI <span style="color: #f3ba2f;">CRYPTO</span></h1>
-            <span class="badge bg-dark border border-secondary text-muted">V4.1 SIMULATED HEDGE FUND</span>
+            <span class="version-badge">V4.2 SIMULATED HEDGE FUND</span>
         </div>
         
         <div class="row g-4">
@@ -33,8 +52,8 @@
                     <span class="stat-label">Total Portfolio Equity (CAD)</span>
                     <div id="balance" class="balance-lg">$10,000.00</div>
                     <div class="mt-3">
-                        <small class="text-muted">Database: <span class="text-success">● Connected</span></small><br>
-                        <small class="text-muted">Feed: <span class="text-success">● Yahoo Live</span></small>
+                        <div class="text-white">● Database: <span class="text-success">Connected</span></div>
+                        <div class="text-white">● Market Feed: <span class="text-success">Yahoo Live</span></div>
                     </div>
                 </div>
             </div>
@@ -42,9 +61,9 @@
             <!-- Logic Console -->
             <div class="col-lg-8">
                 <div class="terminal-card">
-                    <span class="stat-label">AI Logic Console (Latest Heartbeat)</span>
+                    <span class="stat-label">AI Logic Console (Last Scan)</span>
                     <div id="logs" class="log-box row mt-3">
-                        <div class="col-12 text-center text-muted">Waking up the neural engine...</div>
+                        <div class="col-12 status-msg text-center">Waking up the neural engine...</div>
                     </div>
                 </div>
             </div>
@@ -54,15 +73,15 @@
         <div class="terminal-card mt-4">
             <span class="stat-label">Open Strategic Positions</span>
             <div id="trades" class="mt-3">
-                <p class="text-muted text-center py-4">No active positions. The AI is scanning for momentum pullbacks...</p>
+                <p class="status-msg text-center py-4">Scanning markets... No setup detected yet.</p>
             </div>
         </div>
     </div>
 
     <script>
         // --- !!! ACTION: PASTE YOUR UPSTASH REST KEYS HERE !!! ---
-        const REDIS_URL = "https://vital-lobster-24217.upstash.i"; 
-        const REDIS_TOKEN = "AV6ZAAIncDJmNDJmNTIyNjgzNjc0Mjg4YjQwZmQ4OTFmODEzY2MxMHAyMjQyMTc";
+        const REDIS_URL = "PASTE_YOUR_UPSTASH_REST_URL"; 
+        const REDIS_TOKEN = "PASTE_YOUR_UPSTASH_REST_TOKEN";
 
         async function updateUI() {
             if (REDIS_URL.includes("your-unique-url")) {
@@ -86,7 +105,7 @@
                 if (logData.result) {
                     const logs = JSON.parse(logData.result);
                     document.getElementById('logs').innerHTML = Object.entries(logs).map(([coin, msg]) => 
-                        `<div class="col-md-4"><b>${coin.split('-')[0]}:</b> <span class="text-muted">${msg}</span></div>`).join('');
+                        `<div class="col-md-4 log-item"><b class="text-white">${coin.split('-')[0]}:</b> <span class="text-muted ms-1">${msg}</span></div>`).join('');
                 }
 
                 // 3. Fetch Trades & Live P/L
@@ -99,8 +118,7 @@
                     for (let t of rawTrades) {
                         const trade = JSON.parse(t);
                         
-                        // Fetch live price from a secondary fast feed (Binance Public API)
-                        // Converts BTC-USD to BTCUSDT for the ticker
+                        // Live price from Binance
                         const tickerSym = trade.symbol.replace("-", "").replace("USD", "USDT");
                         const priceRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${tickerSym}`);
                         const priceData = await priceRes.json();
@@ -113,13 +131,13 @@
 
                         tradesHtml += `
                             <div class="trade-row d-flex justify-content-between align-items-center">
-                                <div>
-                                    <span class="h5 mb-0">${trade.symbol.split('-')[0]}</span>
-                                    <span class="ms-2 badge ${trade.side === 'BUY' ? 'bg-success' : 'bg-danger'}">${trade.side}</span>
+                                <div style="width: 20%;">
+                                    <span class="h5 mb-0 text-white">${trade.symbol.split('-')[0]}</span>
+                                    <span class="ms-2 badge ${trade.side === 'BUY' ? 'bg-success text-dark' : 'bg-danger'}">${trade.side}</span>
                                 </div>
-                                <div class="live-price">$${currPrice.toLocaleString()}</div>
-                                <div class="${colorClass}" style="font-weight: bold;">${plPct >= 0 ? '+' : ''}${plPct}%</div>
-                                <div class="text-end" style="font-size: 11px; color: #848e9c;">
+                                <div class="live-price" style="width: 30%; text-align: center;">$${currPrice.toLocaleString()}</div>
+                                <div class="${colorClass}" style="width: 20%; text-align: center; font-size: 1.2rem; font-weight: bold;">${plPct >= 0 ? '+' : ''}${plPct}%</div>
+                                <div class="text-end" style="width: 30%; font-size: 11px; color: #b7bdc6;">
                                     ENTRY: $${trade.entry}<br>
                                     TARGET: $${trade.tp_2r}
                                 </div>
@@ -127,7 +145,7 @@
                     }
                     document.getElementById('trades').innerHTML = tradesHtml;
                 } else {
-                    document.getElementById('trades').innerHTML = '<p class="text-muted text-center py-4">Scanning Binance & Coinbase markets... No setup detected.</p>';
+                    document.getElementById('trades').innerHTML = '<p class="status-msg text-center py-4">No active positions. Scanning top coins for setups...</p>';
                 }
 
             } catch (err) {
@@ -135,7 +153,6 @@
             }
         }
 
-        // Automatic updates every 10 seconds
         setInterval(updateUI, 10000);
         updateUI();
     </script>
