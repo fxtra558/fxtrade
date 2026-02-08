@@ -6,3 +6,4 @@ pandas
 gunicorn
 ta
 yfinance
+ccxt
