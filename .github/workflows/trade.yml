@@ -2,8 +2,8 @@ name: Hourly Trading Robot
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *' # Runs at the start of every hour
+  workflow_dispatch: # Allows manual testing
 
 jobs:
   trade:
@@ -12,21 +12,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Use Python 3.10 for maximum stability with OANDA
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # FIX: Added 'requests' to the install list
+      # FIX: Added 'ccxt' to the installation list
       - name: Install Dependencies
         run: |
-          pip install pandas oandapyV20 upstash-redis ta requests
+          pip install pandas ccxt upstash-redis ta requests
 
       - name: Run Trading Bot
         env:
+          # Make sure these secrets match what you put in GitHub Settings
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-          OANDA_API_KEY: ${{ secrets.OANDA_API_KEY }}
-          OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
+          BITUNIX_API_KEY: ${{ secrets.BITUNIX_API_KEY }}
+          BITUNIX_SECRET: ${{ secrets.BITUNIX_SECRET }}
         run: python worker.py
